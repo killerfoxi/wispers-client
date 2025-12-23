@@ -23,7 +23,7 @@ typedef enum {
 } WispersStatus;
 
 // Forward declarations for opaque handles.
-typedef struct WispersNodeStateManagerHandle WispersNodeStateManagerHandle;
+typedef struct WispersNodeStorageHandle WispersNodeStorageHandle;
 typedef struct WispersPendingNodeStateHandle WispersPendingNodeStateHandle;
 typedef struct WispersRegisteredNodeStateHandle WispersRegisteredNodeStateHandle;
 
@@ -45,13 +45,13 @@ typedef struct {
 } WispersNodeStateStoreCallbacks;
 
 // Manager lifecycle.
-WispersNodeStateManagerHandle *wispers_in_memory_manager_new(void);
-WispersNodeStateManagerHandle *wispers_manager_new_with_store(const WispersNodeStateStoreCallbacks *callbacks);
-void wispers_manager_free(WispersNodeStateManagerHandle *handle);
+WispersNodeStorageHandle *wispers_storage_new_in_memory(void);
+WispersNodeStorageHandle *wispers_storage_new_with_callbacks(const WispersNodeStateStoreCallbacks *callbacks);
+void wispers_storage_free(WispersNodeStorageHandle *handle);
 
 // Restore or initialize node state. Exactly one of out_pending or out_registered will be set on success.
-WispersStatus wispers_manager_restore_or_init(
-    WispersNodeStateManagerHandle *handle,
+WispersStatus wispers_storage_restore_or_init(
+    WispersNodeStorageHandle *handle,
     const char *app_namespace,
     const char *profile_namespace, // optional: pass NULL for default
     WispersPendingNodeStateHandle **out_pending,

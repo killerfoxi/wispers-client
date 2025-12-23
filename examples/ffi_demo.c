@@ -3,16 +3,16 @@
 #include <string.h>
 
 int main(void) {
-    WispersNodeStateManagerHandle *manager = wispers_in_memory_manager_new();
-    if (!manager) {
-        fprintf(stderr, "failed to init manager\n");
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) {
+        fprintf(stderr, "failed to init storage\n");
         return 1;
     }
 
     WispersPendingNodeStateHandle *pending = NULL;
     WispersRegisteredNodeStateHandle *registered = NULL;
-    WispersStatus status = wispers_manager_restore_or_init(
-        manager,
+    WispersStatus status = wispers_storage_restore_or_init(
+        storage,
         "app.example",
         NULL,
         &pending,
@@ -21,7 +21,7 @@ int main(void) {
 
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "restore/init failed: %d\n", status);
-        wispers_manager_free(manager);
+        wispers_storage_free(storage);
         return 1;
     }
 
@@ -42,7 +42,7 @@ int main(void) {
 
         if (status != WISPERS_STATUS_SUCCESS) {
             fprintf(stderr, "complete_registration failed: %d\n", status);
-            wispers_manager_free(manager);
+            wispers_storage_free(storage);
             return 1;
         }
 
@@ -50,6 +50,6 @@ int main(void) {
         wispers_registered_state_free(registered);
     }
 
-    wispers_manager_free(manager);
+    wispers_storage_free(storage);
     return 0;
 }

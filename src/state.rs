@@ -4,13 +4,13 @@ use crate::types::{AppNamespace, NodeRegistration, NodeState, ProfileNamespace};
 use std::sync::Arc;
 use urlencoding::encode;
 
-/// High-level manager that drives state initialization and persistence.
+/// High-level storage handle that drives state initialization and persistence.
 #[derive(Clone)]
-pub struct NodeStateManager<S: NodeStateStore> {
+pub struct NodeStorage<S: NodeStateStore> {
     store: SharedStore<S>,
 }
 
-impl<S: NodeStateStore> NodeStateManager<S> {
+impl<S: NodeStateStore> NodeStorage<S> {
     pub fn new(store: S) -> Self {
         Self {
             store: Arc::new(store),
@@ -186,8 +186,8 @@ mod tests {
 
     #[test]
     fn manager_initializes_and_reuses_state() {
-        let manager = NodeStateManager::new(InMemoryNodeStateStore::new());
-        let first_stage = manager
+        let storage = NodeStorage::new(InMemoryNodeStateStore::new());
+        let first_stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
             .unwrap();
         let pending = first_stage
@@ -200,7 +200,7 @@ mod tests {
         );
         let first_key = *pending.root_key_bytes();
 
-        let second_stage = manager
+        let second_stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
             .unwrap();
         let pending_second = second_stage
@@ -211,8 +211,8 @@ mod tests {
 
     #[test]
     fn completing_registration_persists_and_transitions() {
-        let manager = NodeStateManager::new(InMemoryNodeStateStore::new());
-        let stage = manager
+        let storage = NodeStorage::new(InMemoryNodeStateStore::new());
+        let stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
             .unwrap();
         let pending = stage
@@ -223,7 +223,7 @@ mod tests {
         let registered = pending.complete_registration(registration.clone()).unwrap();
         assert_eq!(registered.registration(), &registration);
 
-        let loaded_stage = manager
+        let loaded_stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
             .unwrap();
         assert!(matches!(loaded_stage, NodeStateStage::Registered(_)));

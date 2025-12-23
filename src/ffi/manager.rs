@@ -1,26 +1,26 @@
 use super::handles::{
-    ManagerImpl, WispersNodeStateManagerHandle, WispersPendingNodeStateHandle,
+    ManagerImpl, WispersNodeStorageHandle, WispersPendingNodeStateHandle,
     WispersRegisteredNodeStateHandle, restore_or_init_internal,
 };
 use super::helpers::{c_str_to_string, optional_c_str, reset_out_ptr};
 use crate::errors::WispersStatus;
-use crate::state::NodeStateManager;
+use crate::state::NodeStorage;
 use crate::storage::foreign::WispersNodeStateStoreCallbacks;
 use crate::storage::{ForeignNodeStateStore, InMemoryNodeStateStore};
 use std::os::raw::c_char;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_in_memory_manager_new() -> *mut WispersNodeStateManagerHandle {
-    let manager = NodeStateManager::new(InMemoryNodeStateStore::new());
-    Box::into_raw(Box::new(WispersNodeStateManagerHandle(
-        ManagerImpl::InMemory(manager),
-    )))
+pub extern "C" fn wispers_storage_new_in_memory() -> *mut WispersNodeStorageHandle {
+    let storage = NodeStorage::new(InMemoryNodeStateStore::new());
+    Box::into_raw(Box::new(WispersNodeStorageHandle(ManagerImpl::InMemory(
+        storage,
+    ))))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_manager_new_with_store(
+pub extern "C" fn wispers_storage_new_with_callbacks(
     callbacks: *const WispersNodeStateStoreCallbacks,
-) -> *mut WispersNodeStateManagerHandle {
+) -> *mut WispersNodeStorageHandle {
     if callbacks.is_null() {
         return std::ptr::null_mut();
     }
@@ -30,14 +30,14 @@ pub extern "C" fn wispers_manager_new_with_store(
         Ok(store) => store,
         Err(_) => return std::ptr::null_mut(),
     };
-    let manager = NodeStateManager::new(store);
-    Box::into_raw(Box::new(WispersNodeStateManagerHandle(
-        ManagerImpl::Foreign(manager),
-    )))
+    let storage = NodeStorage::new(store);
+    Box::into_raw(Box::new(WispersNodeStorageHandle(ManagerImpl::Foreign(
+        storage,
+    ))))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_manager_free(handle: *mut WispersNodeStateManagerHandle) {
+pub extern "C" fn wispers_storage_free(handle: *mut WispersNodeStorageHandle) {
     if handle.is_null() {
         return;
     }
@@ -47,8 +47,8 @@ pub extern "C" fn wispers_manager_free(handle: *mut WispersNodeStateManagerHandl
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_manager_restore_or_init(
-    handle: *mut WispersNodeStateManagerHandle,
+pub extern "C" fn wispers_storage_restore_or_init(
+    handle: *mut WispersNodeStorageHandle,
     app_namespace: *const c_char,
     profile_namespace: *const c_char,
     out_pending: *mut *mut WispersPendingNodeStateHandle,
@@ -74,8 +74,8 @@ pub extern "C" fn wispers_manager_restore_or_init(
         Err(err) => return err,
     };
 
-    let manager = unsafe { &mut (*handle).0 };
-    match restore_or_init_internal(manager, app, profile) {
+    let storage = unsafe { &mut (*handle).0 };
+    match restore_or_init_internal(storage, app, profile) {
         Ok(Pending(pending)) => {
             let boxed = Box::new(WispersPendingNodeStateHandle(pending));
             unsafe {

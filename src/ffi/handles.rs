@@ -1,12 +1,12 @@
 use crate::errors::{NodeStateError, WispersStatus};
-use crate::state::{NodeStateManager, NodeStateStage, PendingNodeState, RegisteredNodeState};
+use crate::state::{NodeStateStage, NodeStorage, PendingNodeState, RegisteredNodeState};
 use crate::storage::InMemoryStoreError;
 use crate::storage::{ForeignNodeStateStore, InMemoryNodeStateStore, foreign::ForeignStoreError};
 use crate::types::NodeRegistration;
 
 pub enum ManagerImpl {
-    InMemory(NodeStateManager<InMemoryNodeStateStore>),
-    Foreign(NodeStateManager<ForeignNodeStateStore>),
+    InMemory(NodeStorage<InMemoryNodeStateStore>),
+    Foreign(NodeStorage<ForeignNodeStateStore>),
 }
 
 pub enum PendingImpl {
@@ -19,7 +19,7 @@ pub enum RegisteredImpl {
     Foreign(RegisteredNodeState<ForeignNodeStateStore>),
 }
 
-pub struct WispersNodeStateManagerHandle(pub ManagerImpl);
+pub struct WispersNodeStorageHandle(pub ManagerImpl);
 pub struct WispersPendingNodeStateHandle(pub PendingImpl);
 pub struct WispersRegisteredNodeStateHandle(pub RegisteredImpl);
 
