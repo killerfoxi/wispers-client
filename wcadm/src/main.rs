@@ -51,7 +51,7 @@ fn run() -> Result<()> {
             group_id: Some(id),
         } => list_group(&client, &base_url, &cli.api_key, &id),
         Command::Add => add_group(&client, &base_url, &cli.api_key),
-        Command::Remove { group_id } => remove_group(&group_id),
+        Command::Remove { group_id } => remove_group(&client, &base_url, &cli.api_key, &group_id),
     }
 }
 
@@ -137,6 +137,17 @@ fn list_groups(client: &Client, base_url: &str, api_key: &str) -> Result<()> {
 struct GroupResponse {
     id: String,
     created_at: String,
+    #[serde(default)]
+    nodes: Vec<NodeResponse>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NodeResponse {
+    id: String,
+    name: Option<String>,
+    last_seen_at: Option<String>,
+    created_at: String,
 }
 
 fn list_group(client: &Client, base_url: &str, api_key: &str, group_id: &str) -> Result<()> {
@@ -158,7 +169,19 @@ fn list_group(client: &Client, base_url: &str, api_key: &str, group_id: &str) ->
 
     println!("Connectivity group: {}", data.id);
     println!("  Created: {}", data.created_at);
-    println!("  Nodes: (not yet implemented in backend)");
+    if data.nodes.is_empty() {
+        println!("  Nodes: (none)");
+    } else {
+        println!("  Nodes:");
+        for node in &data.nodes {
+            let name = node.name.as_deref().unwrap_or("(unnamed)");
+            let last_seen = node
+                .last_seen_at
+                .as_deref()
+                .unwrap_or("never");
+            println!("    {} - {} (last seen: {})", node.id, name, last_seen);
+        }
+    }
 
     Ok(())
 }
@@ -187,9 +210,22 @@ fn add_group(client: &Client, base_url: &str, api_key: &str) -> Result<()> {
     Ok(())
 }
 
-fn remove_group(group_id: &str) -> Result<()> {
-    bail!(
-        "remove is not yet implemented in the backend\n\
-         Would remove connectivity group: {group_id}"
-    );
+fn remove_group(client: &Client, base_url: &str, api_key: &str, group_id: &str) -> Result<()> {
+    let url = format!("{base_url}/api/v1/connectivity-groups/{group_id}");
+
+    let resp = client
+        .delete(&url)
+        .bearer_auth(api_key)
+        .send()
+        .context("failed to send request")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        bail!("server returned {status}: {body}");
+    }
+
+    println!("Deleted connectivity group: {group_id}");
+
+    Ok(())
 }
