@@ -17,21 +17,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List connectivity groups, or nodes within a group
-    List {
-        /// Connectivity group ID (if omitted, lists all groups)
-        group_id: Option<String>,
+    /// List all connectivity groups
+    #[command(name = "list-groups")]
+    ListGroups,
+
+    /// Show details of a connectivity group
+    #[command(name = "show-group")]
+    ShowGroup {
+        /// Connectivity group ID
+        group_id: String,
     },
+
     /// Add a new connectivity group
-    Add {
+    #[command(name = "add-group")]
+    AddGroup {
         /// Optional name for the connectivity group
         #[arg(long)]
         name: Option<String>,
     },
+
     /// Remove a connectivity group
-    Remove {
+    #[command(name = "remove-group")]
+    RemoveGroup {
         /// Connectivity group ID to remove
         group_id: String,
+    },
+
+    /// Create a registration token for a new node
+    #[command(name = "create-registration-token")]
+    CreateRegistrationToken {
+        /// Connectivity group ID
+        group_id: String,
+
+        /// Optional name for the node
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -50,12 +70,15 @@ fn run() -> Result<()> {
     let client = Client::new();
 
     match cli.command {
-        Command::List { group_id: None } => list_groups(&client, &base_url, &cli.api_key),
-        Command::List {
-            group_id: Some(id),
-        } => list_group(&client, &base_url, &cli.api_key, &id),
-        Command::Add { name } => add_group(&client, &base_url, &cli.api_key, name.as_deref()),
-        Command::Remove { group_id } => remove_group(&client, &base_url, &cli.api_key, &group_id),
+        Command::ListGroups => list_groups(&client, &base_url, &cli.api_key),
+        Command::ShowGroup { group_id } => show_group(&client, &base_url, &cli.api_key, &group_id),
+        Command::AddGroup { name } => add_group(&client, &base_url, &cli.api_key, name.as_deref()),
+        Command::RemoveGroup { group_id } => {
+            remove_group(&client, &base_url, &cli.api_key, &group_id)
+        }
+        Command::CreateRegistrationToken { group_id, name } => {
+            create_registration_token(&client, &base_url, &cli.api_key, &group_id, name.as_deref())
+        }
     }
 }
 
@@ -158,7 +181,7 @@ struct NodeResponse {
     created_at: String,
 }
 
-fn list_group(client: &Client, base_url: &str, api_key: &str, group_id: &str) -> Result<()> {
+fn show_group(client: &Client, base_url: &str, api_key: &str, group_id: &str) -> Result<()> {
     let url = format!("{base_url}/api/v1/connectivity-groups/{group_id}");
 
     let resp = client
@@ -250,6 +273,53 @@ fn remove_group(client: &Client, base_url: &str, api_key: &str, group_id: &str) 
     }
 
     println!("Deleted connectivity group: {group_id}");
+
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateRegistrationTokenRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_name: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegistrationTokenResponse {
+    token: String,
+    expires_at: String,
+}
+
+fn create_registration_token(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    group_id: &str,
+    name: Option<&str>,
+) -> Result<()> {
+    let url = format!("{base_url}/api/v1/connectivity-groups/{group_id}/registration-tokens");
+
+    let body = CreateRegistrationTokenRequest { node_name: name };
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .context("failed to send request")?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        bail!("server returned {status}: {body}");
+    }
+
+    let data: RegistrationTokenResponse = resp.json().context("failed to parse response")?;
+
+    println!("Registration token created:");
+    println!("  Token: {}", data.token);
+    println!("  Expires: {}", data.expires_at);
 
     Ok(())
 }
