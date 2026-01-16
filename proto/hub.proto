@@ -3,7 +3,7 @@
 
 syntax = "proto3";
 package connect.hub;
-option go_package = "connect/proto/hubpb";
+option go_package = "connect/client/proto/hubpb";
 option java_package = "dev.wispers.connect.proto.hub";
 
 service Hub {
