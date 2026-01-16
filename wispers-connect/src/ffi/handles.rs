@@ -59,6 +59,7 @@ impl From<NodeStateError<InMemoryStoreError>> for WispersStatus {
     fn from(value: NodeStateError<InMemoryStoreError>) -> Self {
         match value {
             NodeStateError::Store(_) => WispersStatus::StoreError,
+            NodeStateError::Hub(_) => WispersStatus::StoreError, // TODO: add proper status
             NodeStateError::AlreadyRegistered => WispersStatus::AlreadyRegistered,
             NodeStateError::NotRegistered => WispersStatus::NotRegistered,
         }
@@ -77,6 +78,7 @@ impl From<NodeStateError<ForeignStoreError>> for WispersStatus {
                 | ForeignStoreError::RegistrationEncode
                 | ForeignStoreError::RegistrationDecode,
             ) => WispersStatus::StoreError,
+            NodeStateError::Hub(_) => WispersStatus::StoreError, // TODO: add proper status
             NodeStateError::AlreadyRegistered => WispersStatus::AlreadyRegistered,
             NodeStateError::NotRegistered => WispersStatus::NotRegistered,
         }

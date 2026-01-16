@@ -3,6 +3,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum NodeStateError<StoreError> {
     Store(StoreError),
+    Hub(crate::hub::HubError),
     AlreadyRegistered,
     NotRegistered,
 }
@@ -11,12 +12,17 @@ impl<StoreError> NodeStateError<StoreError> {
     pub fn store(error: StoreError) -> Self {
         Self::Store(error)
     }
+
+    pub fn hub(error: crate::hub::HubError) -> Self {
+        Self::Hub(error)
+    }
 }
 
 impl<StoreError: fmt::Display> fmt::Display for NodeStateError<StoreError> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NodeStateError::Store(err) => write!(f, "store error: {err}"),
+            NodeStateError::Hub(err) => write!(f, "hub error: {err}"),
             NodeStateError::AlreadyRegistered => write!(f, "node is already registered"),
             NodeStateError::NotRegistered => write!(f, "node has not completed registration"),
         }

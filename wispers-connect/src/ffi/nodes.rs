@@ -4,9 +4,9 @@ use super::handles::{
 };
 use super::helpers::{c_str_to_string, reset_out_ptr};
 use crate::errors::WispersStatus;
-use crate::types::{ConnectivityGroupId, NodeId, NodeRegistration};
+use crate::types::{AuthToken, ConnectivityGroupId, NodeRegistration};
 use std::ffi::CString;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 #[unsafe(no_mangle)]
@@ -54,7 +54,8 @@ pub extern "C" fn wispers_pending_state_registration_url(
 pub extern "C" fn wispers_pending_state_complete_registration(
     handle: *mut WispersPendingNodeStateHandle,
     connectivity_group_id: *const c_char,
-    node_id: *const c_char,
+    node_number: c_int,
+    auth_token: *const c_char,
     out_registered: *mut *mut WispersRegisteredNodeStateHandle,
 ) -> WispersStatus {
     if handle.is_null() || out_registered.is_null() {
@@ -69,16 +70,17 @@ pub extern "C" fn wispers_pending_state_complete_registration(
         Ok(value) => value,
         Err(err) => return err,
     };
-    let node = match c_str_to_string(node_id) {
+    let token = match c_str_to_string(auth_token) {
         Ok(value) => value,
         Err(err) => return err,
     };
 
     let wrapper = unsafe { Box::from_raw(handle) };
-    let registration = NodeRegistration {
-        connectivity_group_id: ConnectivityGroupId::from(connectivity),
-        node_id: NodeId::from(node),
-    };
+    let registration = NodeRegistration::new(
+        ConnectivityGroupId::from(connectivity),
+        node_number,
+        AuthToken::new(token),
+    );
 
     match complete_registration_internal(wrapper.0, registration) {
         Ok(registered) => {

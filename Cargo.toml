@@ -1,3 +1,3 @@
 [workspace]
-members = ["wispers-connect", "wcadm"]
+members = ["wispers-connect", "wcadm", "wconnect"]
 resolver = "2"

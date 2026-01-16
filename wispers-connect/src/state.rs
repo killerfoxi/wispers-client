@@ -130,6 +130,27 @@ impl<S: NodeStateStore> PendingNodeState<S> {
         RegisteredNodeState::new(self.state, self.store)
     }
 
+    /// Register with the hub using a registration token.
+    ///
+    /// This connects to the hub, completes registration, persists the credentials,
+    /// and returns the registered state.
+    pub async fn register(
+        self,
+        hub_addr: &str,
+        token: &str,
+    ) -> Result<RegisteredNodeState<S>, NodeStateError<S::Error>> {
+        use crate::hub::HubClient;
+
+        let mut client = HubClient::connect(hub_addr)
+            .await
+            .map_err(NodeStateError::hub)?;
+        let registration = client
+            .complete_registration(token)
+            .await
+            .map_err(NodeStateError::hub)?;
+        self.complete_registration(registration)
+    }
+
     #[cfg(test)]
     pub(crate) fn root_key_bytes(&self) -> &[u8; crate::types::ROOT_KEY_LEN] {
         self.state.root_key.as_bytes()
@@ -175,6 +196,22 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
         self.store
             .delete(&app, &profile)
             .map_err(NodeStateError::store)
+    }
+
+    /// List all nodes in the connectivity group.
+    pub async fn list_nodes(
+        &self,
+        hub_addr: &str,
+    ) -> Result<Vec<crate::hub::Node>, NodeStateError<S::Error>> {
+        use crate::hub::HubClient;
+
+        let mut client = HubClient::connect(hub_addr)
+            .await
+            .map_err(NodeStateError::hub)?;
+        client
+            .list_nodes(self.registration())
+            .await
+            .map_err(NodeStateError::hub)
     }
 }
 

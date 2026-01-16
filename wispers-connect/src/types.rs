@@ -110,28 +110,52 @@ impl Drop for RootKey {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRegistration {
     pub connectivity_group_id: ConnectivityGroupId,
-    pub node_id: NodeId,
+    pub node_number: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_token: Option<AuthToken>,
 }
 
-/// Identifier for the node within the remote control plane.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct NodeId(String);
+impl NodeRegistration {
+    pub fn new(
+        connectivity_group_id: ConnectivityGroupId,
+        node_number: i32,
+        auth_token: AuthToken,
+    ) -> Self {
+        Self {
+            connectivity_group_id,
+            node_number,
+            auth_token: Some(auth_token),
+        }
+    }
 
-impl NodeId {
+    pub fn auth_token(&self) -> Option<&AuthToken> {
+        self.auth_token.as_ref()
+    }
+}
+
+/// Authentication token for node-to-hub communication.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthToken(String);
+
+impl AuthToken {
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
-}
 
-impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-impl<T: Into<String>> From<T> for NodeId {
-    fn from(value: T) -> Self {
-        Self::new(value)
+impl fmt::Debug for AuthToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AuthToken([redacted])")
+    }
+}
+
+impl Drop for AuthToken {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
@@ -202,10 +226,11 @@ impl NodeState {
 
 #[cfg(test)]
 pub(crate) fn registration_fixture() -> NodeRegistration {
-    NodeRegistration {
-        connectivity_group_id: ConnectivityGroupId::from("group-123"),
-        node_id: NodeId::from("node-456"),
-    }
+    NodeRegistration::new(
+        ConnectivityGroupId::from("group-123"),
+        1,
+        AuthToken::new("test-token-456"),
+    )
 }
 
 #[cfg(test)]
