@@ -2,12 +2,55 @@
 // Cryptographic node roster, establishing inter-node trust that cannot be
 // subverted by the hub.
 
-
 syntax = "proto3";
 package connect.roster;
 option go_package = "connect/client/proto/rosterpb";
 option java_package = "dev.wispers.connect.proto.roster";
 
+// The roster is a cryptographically signed list of nodes in a connectivity
+// group. It maintains a verifiable history of additions and revocations,
+// preventing the hub from unilaterally modifying membership.
 message Roster {
-  // TODO	
+  int64 version = 1;
+  repeated Node nodes = 2;
+  repeated Addendum addenda = 3;
+  repeated Revocation revocations = 4;
+}
+
+// A node in the connectivity group.
+message Node {
+  int32 node_number = 1;
+  bytes public_key_spki = 2;
+}
+
+// Records the addition of a new node to the roster.
+// Adding a node requires two signatures: the new node and an existing endorser.
+message Addendum {
+  message Payload {
+    int64 base_version = 1;
+    bytes base_version_hash = 2;
+    int64 new_version = 3;
+    int32 new_node_number = 4;
+    int32 endorser_node_number = 5;
+    // Nonces binding the PairNodes ceremony to this roster update.
+    bytes new_node_nonce = 6;
+    bytes endorser_nonce = 7;
+  }
+  Payload payload = 1;
+  bytes new_node_signature = 2;
+  bytes endorser_signature = 3;
+}
+
+// Records the revocation of a node from the roster.
+// Any single activated node can revoke any other node.
+message Revocation {
+  message Payload {
+    int64 base_version = 1;
+    bytes base_version_hash = 2;
+    int64 new_version = 3;
+    int32 revoked_node_number = 4;
+    int32 revoker_node_number = 5;
+  }
+  Payload payload = 1;
+  bytes revoker_signature = 2;
 }
