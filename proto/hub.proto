@@ -68,7 +68,6 @@ message PairNodesMessage {
 
 message UpdateRosterRequest {
   roster.Roster new_roster = 1;
-  bytes new_node_signature = 2;
 }
 
 message UpdateRosterResponse {
@@ -78,7 +77,6 @@ message UpdateRosterResponse {
 message RosterCosignRequest {
   int64 new_node_number = 1;
   roster.Roster new_roster = 2;
-  bytes new_node_signature = 3;
 }
 
 message RosterCosignResponse {
