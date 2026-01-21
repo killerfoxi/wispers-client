@@ -47,8 +47,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Register { token } => register(hub_override, &token).await,
         Command::Nodes => nodes(hub_override).await,
-        Command::Status => status(),
-        Command::Logout => logout(),
+        Command::Status => status(hub_override).await,
+        Command::Logout => logout(hub_override).await,
     }
 }
 
@@ -58,6 +58,7 @@ async fn register(hub_override: Option<&str>, token: &str) -> Result<()> {
     // TODO: remove app/profile namespaces later
     let stage = storage
         .restore_or_init_node_state("unused", None::<String>)
+        .await
         .context("failed to load node state")?;
 
     let pending = match stage {
@@ -66,6 +67,14 @@ async fn register(hub_override: Option<&str>, token: &str) -> Result<()> {
             let reg = r.registration();
             anyhow::bail!(
                 "Already registered as node {} in group {}. Use 'wconnect logout' to clear.",
+                reg.node_number,
+                reg.connectivity_group_id
+            );
+        }
+        NodeStateStage::Activated(a) => {
+            let reg = a.registration();
+            anyhow::bail!(
+                "Already activated as node {} in group {}. Use 'wconnect logout' to clear.",
                 reg.node_number,
                 reg.connectivity_group_id
             );
@@ -90,20 +99,34 @@ async fn nodes(hub_override: Option<&str>) -> Result<()> {
     let storage = get_storage(hub_override)?;
     let stage = storage
         .restore_or_init_node_state("unused", None::<String>)
+        .await
         .context("failed to load node state")?;
 
-    let registered = match stage {
-        NodeStateStage::Registered(r) => r,
+    let (reg, nodes) = match stage {
         NodeStateStage::Pending(_) => {
             anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
         }
+        NodeStateStage::Registered(r) => {
+            let reg = r.registration().clone();
+            let nodes = r.list_nodes().await.context("failed to list nodes")?;
+            (reg, nodes)
+        }
+        NodeStateStage::Activated(a) => {
+            let reg = a.registration().clone();
+            // Convert roster nodes to the Node type used by list_nodes
+            let nodes: Vec<_> = a
+                .roster()
+                .nodes
+                .iter()
+                .map(|n| wispers_connect::Node {
+                    node_number: n.node_number,
+                    name: String::new(),
+                    last_seen_at_millis: 0,
+                })
+                .collect();
+            (reg, nodes)
+        }
     };
-
-    let reg = registered.registration();
-    let nodes = registered
-        .list_nodes()
-        .await
-        .context("failed to list nodes")?;
 
     if nodes.is_empty() {
         println!("No nodes in connectivity group.");
@@ -126,47 +149,65 @@ async fn nodes(hub_override: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn status() -> Result<()> {
-    let storage = get_storage(None)?;
+async fn status(hub_override: Option<&str>) -> Result<()> {
+    let storage = get_storage(hub_override)?;
     let stage = storage
         .restore_or_init_node_state("unused", None::<String>)
+        .await
         .context("failed to load node state")?;
 
     match stage {
+        NodeStateStage::Pending(_) => {
+            println!("Not registered.");
+        }
         NodeStateStage::Registered(r) => {
             let reg = r.registration();
-            println!("Registered:");
+            println!("Registered (not yet activated):");
             println!("  Connectivity group: {}", reg.connectivity_group_id);
             println!("  Node number: {}", reg.node_number);
         }
-        NodeStateStage::Pending(_) => {
-            println!("Not registered.");
+        NodeStateStage::Activated(a) => {
+            let reg = a.registration();
+            println!("Activated:");
+            println!("  Connectivity group: {}", reg.connectivity_group_id);
+            println!("  Node number: {}", reg.node_number);
         }
     }
     Ok(())
 }
 
-fn logout() -> Result<()> {
-    let storage = get_storage(None)?;
+async fn logout(hub_override: Option<&str>) -> Result<()> {
+    let storage = get_storage(hub_override)?;
     let stage = storage
         .restore_or_init_node_state("unused", None::<String>)
+        .await
         .context("failed to load node state")?;
 
     match stage {
-        NodeStateStage::Registered(r) => {
-            r.delete().context("failed to delete state")?;
-            println!("Credentials cleared.");
-        }
         NodeStateStage::Pending(p) => {
-            // Delete pending state too
             let app = p.app_namespace().clone();
             let profile = p.profile_namespace().clone();
             drop(p);
-            // Need to delete manually - PendingNodeState doesn't have delete
             let store = FileNodeStateStore::with_app_name("wconnect")
                 .context("could not determine config directory")?;
             store.delete(&app, &profile).context("failed to delete state")?;
             println!("State cleared.");
+        }
+        NodeStateStage::Registered(r) => {
+            r.delete().context("failed to delete state")?;
+            println!("Credentials cleared.");
+        }
+        NodeStateStage::Activated(_) => {
+            // TODO: proper revocation. For now, just delete local state.
+            let store = FileNodeStateStore::with_app_name("wconnect")
+                .context("could not determine config directory")?;
+            store
+                .delete(
+                    &wispers_connect::AppNamespace::from("unused"),
+                    &wispers_connect::ProfileNamespace::default(),
+                )
+                .context("failed to delete state")?;
+            println!("Credentials cleared (note: node not revoked from roster).");
         }
     }
     Ok(())

@@ -9,7 +9,6 @@ pub use handles::{
 pub use helpers::wispers_string_free;
 pub use manager::{
     wispers_storage_free, wispers_storage_new_in_memory, wispers_storage_new_with_callbacks,
-    wispers_storage_restore_or_init,
 };
 pub use nodes::{
     wispers_pending_state_complete_registration, wispers_pending_state_free,

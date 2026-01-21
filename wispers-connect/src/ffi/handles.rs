@@ -1,5 +1,5 @@
 use crate::errors::{NodeStateError, WispersStatus};
-use crate::state::{NodeStateStage, NodeStorage, PendingNodeState, RegisteredNodeState};
+use crate::state::{NodeStorage, PendingNodeState, RegisteredNodeState};
 use crate::storage::InMemoryStoreError;
 use crate::storage::{ForeignNodeStateStore, InMemoryNodeStateStore, foreign::ForeignStoreError};
 use crate::types::NodeRegistration;
@@ -22,38 +22,6 @@ pub enum RegisteredImpl {
 pub struct WispersNodeStorageHandle(pub ManagerImpl);
 pub struct WispersPendingNodeStateHandle(pub PendingImpl);
 pub struct WispersRegisteredNodeStateHandle(pub RegisteredImpl);
-
-pub enum NodeStateStageImpl {
-    Pending(PendingImpl),
-    Registered(RegisteredImpl),
-}
-
-type InMemoryStage = NodeStateStage<InMemoryNodeStateStore>;
-type ForeignStage = NodeStateStage<ForeignNodeStateStore>;
-
-impl NodeStateStageImpl {
-    pub fn from_in_memory(stage: InMemoryStage) -> Self {
-        match stage {
-            NodeStateStage::Pending(pending) => {
-                NodeStateStageImpl::Pending(PendingImpl::InMemory(pending))
-            }
-            NodeStateStage::Registered(registered) => {
-                NodeStateStageImpl::Registered(RegisteredImpl::InMemory(registered))
-            }
-        }
-    }
-
-    pub fn from_foreign(stage: ForeignStage) -> Self {
-        match stage {
-            NodeStateStage::Pending(pending) => {
-                NodeStateStageImpl::Pending(PendingImpl::Foreign(pending))
-            }
-            NodeStateStage::Registered(registered) => {
-                NodeStateStageImpl::Registered(RegisteredImpl::Foreign(registered))
-            }
-        }
-    }
-}
 
 impl From<NodeStateError<InMemoryStoreError>> for WispersStatus {
     fn from(value: NodeStateError<InMemoryStoreError>) -> Self {
@@ -91,22 +59,7 @@ impl From<NodeStateError<ForeignStoreError>> for WispersStatus {
     }
 }
 
-pub fn restore_or_init_internal(
-    manager: &mut ManagerImpl,
-    app_namespace: String,
-    profile_namespace: Option<String>,
-) -> Result<NodeStateStageImpl, WispersStatus> {
-    match manager {
-        ManagerImpl::InMemory(inner) => inner
-            .restore_or_init_node_state(app_namespace, profile_namespace)
-            .map(NodeStateStageImpl::from_in_memory)
-            .map_err(Into::into),
-        ManagerImpl::Foreign(inner) => inner
-            .restore_or_init_node_state(app_namespace, profile_namespace)
-            .map(NodeStateStageImpl::from_foreign)
-            .map_err(Into::into),
-    }
-}
+// TODO: restore_or_init requires async FFI with callbacks (deferred)
 
 pub fn delete_registered_internal(registered: RegisteredImpl) -> Result<(), WispersStatus> {
     match registered {

@@ -39,57 +39,104 @@ impl<S: NodeStateStore> NodeStorage<S> {
         self.config.write().unwrap().hub_addr = addr.into();
     }
 
-    pub fn restore_or_init_node_state(
+    /// Initialize or restore node state.
+    ///
+    /// Returns the current stage:
+    /// - `Pending` if not registered
+    /// - `Registered` if registered but not in the roster
+    /// - `Activated` if registered and in the roster
+    ///
+    /// This method fetches the roster from the hub when the node is registered
+    /// to determine if it has been activated.
+    pub async fn restore_or_init_node_state(
         &self,
         app_namespace: impl Into<AppNamespace>,
         profile_namespace: Option<impl Into<ProfileNamespace>>,
     ) -> Result<NodeStateStage<S>, NodeStateError<S::Error>> {
+        use crate::hub::HubClient;
+
         let app_namespace = app_namespace.into();
         let profile_namespace = profile_namespace
             .map(Into::into)
             .unwrap_or_else(ProfileNamespace::default);
 
-        match self
+        let state = match self
             .store
             .load(&app_namespace, &profile_namespace)
             .map_err(NodeStateError::store)?
         {
-            Some(state) => NodeStateStage::from_state(state, self.store.clone(), self.config.clone()),
+            Some(state) => state,
             None => {
                 let state = NodeState::initialize_with_namespaces(
                     app_namespace.clone(),
                     profile_namespace.clone(),
                 );
                 self.store.save(&state).map_err(NodeStateError::store)?;
-                Ok(NodeStateStage::Pending(PendingNodeState::new(
+                return Ok(NodeStateStage::Pending(PendingNodeState::new(
                     state,
                     self.store.clone(),
                     self.config.clone(),
-                )))
+                )));
             }
+        };
+
+        // Not registered yet
+        if !state.is_registered() {
+            return Ok(NodeStateStage::Pending(PendingNodeState::new(
+                state,
+                self.store.clone(),
+                self.config.clone(),
+            )));
+        }
+
+        // Registered - fetch roster to check if activated
+        let registration = state.registration.as_ref().expect("checked is_registered");
+        let hub_addr = self.config.read().unwrap().hub_addr.clone();
+
+        let mut client = HubClient::connect(hub_addr)
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        let roster = client
+            .get_roster(registration)
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        // Check if our node is in the roster
+        let is_activated = roster
+            .nodes
+            .iter()
+            .any(|n| n.node_number == registration.node_number);
+
+        if is_activated {
+            let signing_key = SigningKeyPair::derive_from_root_key(state.root_key.as_bytes());
+            Ok(NodeStateStage::Activated(ActivatedNode {
+                signing_key,
+                roster,
+                registration: registration.clone(),
+            }))
+        } else {
+            Ok(NodeStateStage::Registered(RegisteredNodeState::new(
+                state,
+                self.store.clone(),
+                self.config.clone(),
+            )?))
         }
     }
+
 }
 
-/// State machine representing whether a node still needs registration.
+/// State machine representing the node's current stage.
 pub enum NodeStateStage<S: NodeStateStore> {
+    /// Node needs to register with the hub.
     Pending(PendingNodeState<S>),
+    /// Node is registered but not yet in the roster (needs activation).
     Registered(RegisteredNodeState<S>),
+    /// Node is in the roster and ready to operate.
+    Activated(ActivatedNode),
 }
 
 impl<S: NodeStateStore> NodeStateStage<S> {
-    fn from_state(
-        state: NodeState,
-        store: SharedStore<S>,
-        config: SharedConfig,
-    ) -> Result<Self, NodeStateError<S::Error>> {
-        if state.is_registered() {
-            Ok(Self::Registered(RegisteredNodeState::new(state, store, config)?))
-        } else {
-            Ok(Self::Pending(PendingNodeState::new(state, store, config)))
-        }
-    }
-
     pub fn into_pending(self) -> Option<PendingNodeState<S>> {
         if let NodeStateStage::Pending(state) = self {
             Some(state)
@@ -101,6 +148,14 @@ impl<S: NodeStateStore> NodeStateStage<S> {
     pub fn into_registered(self) -> Option<RegisteredNodeState<S>> {
         if let NodeStateStage::Registered(state) = self {
             Some(state)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_activated(self) -> Option<ActivatedNode> {
+        if let NodeStateStage::Activated(node) = self {
+            Some(node)
         } else {
             None
         }
@@ -310,7 +365,6 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
             return Err(NodeStateError::MacVerificationFailed);
         }
 
-        let endorser_public_key_spki = response_payload.public_key_spki.clone();
         let endorser_nonce = response_payload.nonce.clone();
 
         // Fetch the current roster
@@ -361,17 +415,15 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
 
         Ok(ActivatedNode {
             signing_key,
-            endorser_public_key_spki,
             roster: cosigned_roster,
             registration: self.registration().clone(),
         })
     }
 }
 
-/// An activated node that has completed pairing and roster update.
+/// An activated node that is in the roster and ready to operate.
 pub struct ActivatedNode {
     signing_key: SigningKeyPair,
-    endorser_public_key_spki: Vec<u8>,
     roster: proto::connect::roster::Roster,
     registration: NodeRegistration,
 }
@@ -382,11 +434,6 @@ impl ActivatedNode {
         &self.signing_key
     }
 
-    /// Get the endorser's public key in SPKI format.
-    pub fn endorser_public_key_spki(&self) -> &[u8] {
-        &self.endorser_public_key_spki
-    }
-
     /// Get the current roster.
     pub fn roster(&self) -> &proto::connect::roster::Roster {
         &self.roster
@@ -395,6 +442,11 @@ impl ActivatedNode {
     /// Get the node registration info.
     pub fn registration(&self) -> &NodeRegistration {
         &self.registration
+    }
+
+    /// Get the node's number.
+    pub fn node_number(&self) -> i32 {
+        self.registration.node_number
     }
 }
 
@@ -412,11 +464,12 @@ mod tests {
     use crate::storage::InMemoryNodeStateStore;
     use crate::types::DEFAULT_PROFILE_NAMESPACE;
 
-    #[test]
-    fn manager_initializes_and_reuses_state() {
+    #[tokio::test]
+    async fn manager_initializes_and_reuses_state() {
         let storage = NodeStorage::new(InMemoryNodeStateStore::new());
         let first_stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
+            .await
             .unwrap();
         let pending = first_stage
             .into_pending()
@@ -430,6 +483,7 @@ mod tests {
 
         let second_stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
+            .await
             .unwrap();
         let pending_second = second_stage
             .into_pending()
@@ -437,11 +491,12 @@ mod tests {
         assert_eq!(pending_second.root_key_bytes(), &first_key);
     }
 
-    #[test]
-    fn completing_registration_persists_and_transitions() {
+    #[tokio::test]
+    async fn completing_registration_persists_and_transitions() {
         let storage = NodeStorage::new(InMemoryNodeStateStore::new());
         let stage = storage
             .restore_or_init_node_state("app.example", None::<String>)
+            .await
             .unwrap();
         let pending = stage
             .into_pending()
@@ -451,9 +506,17 @@ mod tests {
         let registered = pending.complete_registration(registration.clone()).unwrap();
         assert_eq!(registered.registration(), &registration);
 
-        let loaded_stage = storage
-            .restore_or_init_node_state("app.example", None::<String>)
-            .unwrap();
-        assert!(matches!(loaded_stage, NodeStateStage::Registered(_)));
+        // Verify registration was persisted by checking the store directly
+        // (restore_or_init_node_state would require network access for registered nodes)
+        let loaded = storage
+            .store
+            .load(
+                &crate::types::AppNamespace::from("app.example"),
+                &crate::types::ProfileNamespace::default(),
+            )
+            .unwrap()
+            .expect("state should be persisted");
+        assert!(loaded.is_registered());
+        assert_eq!(loaded.registration.as_ref().unwrap(), &registration);
     }
 }
