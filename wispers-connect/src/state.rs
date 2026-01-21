@@ -114,6 +114,9 @@ impl<S: NodeStateStore> NodeStorage<S> {
                 signing_key,
                 roster,
                 registration: registration.clone(),
+                store: self.store.clone(),
+                app_namespace: state.app_namespace.clone(),
+                profile_namespace: state.profile_namespace.clone(),
             }))
         } else {
             Ok(NodeStateStage::Registered(RegisteredNodeState::new(
@@ -133,7 +136,7 @@ pub enum NodeStateStage<S: NodeStateStore> {
     /// Node is registered but not yet in the roster (needs activation).
     Registered(RegisteredNodeState<S>),
     /// Node is in the roster and ready to operate.
-    Activated(ActivatedNode),
+    Activated(ActivatedNode<S>),
 }
 
 impl<S: NodeStateStore> NodeStateStage<S> {
@@ -153,11 +156,20 @@ impl<S: NodeStateStore> NodeStateStage<S> {
         }
     }
 
-    pub fn into_activated(self) -> Option<ActivatedNode> {
+    pub fn into_activated(self) -> Option<ActivatedNode<S>> {
         if let NodeStateStage::Activated(node) = self {
             Some(node)
         } else {
             None
+        }
+    }
+
+    /// Logout from whatever state we're in.
+    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
+        match self {
+            NodeStateStage::Pending(p) => p.logout().await,
+            NodeStateStage::Registered(r) => r.logout().await,
+            NodeStateStage::Activated(a) => a.logout().await,
         }
     }
 }
@@ -238,6 +250,13 @@ impl<S: NodeStateStore> PendingNodeState<S> {
     pub(crate) fn root_key_bytes(&self) -> &[u8; crate::types::ROOT_KEY_LEN] {
         self.state.root_key.as_bytes()
     }
+
+    /// Logout: delete local state.
+    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
+        self.store
+            .delete(&self.state.app_namespace, &self.state.profile_namespace)
+            .map_err(NodeStateError::store)
+    }
 }
 
 /// Registered node state ready for node runtime initialization.
@@ -279,11 +298,12 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
             .expect("registration must be present")
     }
 
-    pub fn delete(self) -> Result<(), NodeStateError<S::Error>> {
-        let app = self.state.app_namespace.clone();
-        let profile = self.state.profile_namespace.clone();
+    /// Logout: tell hub to remove node, then delete local state.
+    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
+        // TODO: tell hub to remove this node from the connectivity group
+        // For now, just delete local state
         self.store
-            .delete(&app, &profile)
+            .delete(&self.state.app_namespace, &self.state.profile_namespace)
             .map_err(NodeStateError::store)
     }
 
@@ -309,7 +329,7 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
     pub async fn activate(
         &self,
         pairing_code: &str,
-    ) -> Result<ActivatedNode, NodeStateError<S::Error>> {
+    ) -> Result<ActivatedNode<S>, NodeStateError<S::Error>> {
         use crate::hub::HubClient;
 
         // Parse the pairing code
@@ -417,18 +437,24 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
             signing_key,
             roster: cosigned_roster,
             registration: self.registration().clone(),
+            store: self.store.clone(),
+            app_namespace: self.state.app_namespace.clone(),
+            profile_namespace: self.state.profile_namespace.clone(),
         })
     }
 }
 
 /// An activated node that is in the roster and ready to operate.
-pub struct ActivatedNode {
+pub struct ActivatedNode<S: NodeStateStore> {
     signing_key: SigningKeyPair,
     roster: proto::connect::roster::Roster,
     registration: NodeRegistration,
+    store: SharedStore<S>,
+    app_namespace: AppNamespace,
+    profile_namespace: ProfileNamespace,
 }
 
-impl ActivatedNode {
+impl<S: NodeStateStore> ActivatedNode<S> {
     /// Get the node's signing key pair.
     pub fn signing_key(&self) -> &SigningKeyPair {
         &self.signing_key
@@ -447,6 +473,16 @@ impl ActivatedNode {
     /// Get the node's number.
     pub fn node_number(&self) -> i32 {
         self.registration.node_number
+    }
+
+    /// Logout: revoke from roster, deregister from connectivity group, delete local state.
+    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
+        // TODO: submit self-revocation to roster
+        // TODO: tell hub to remove node from connectivity group
+        // For now, just delete local state
+        self.store
+            .delete(&self.app_namespace, &self.profile_namespace)
+            .map_err(NodeStateError::store)
     }
 }
 

@@ -1,6 +1,6 @@
 use super::handles::{
     WispersPendingNodeStateHandle, WispersRegisteredNodeStateHandle,
-    complete_registration_internal, delete_registered_internal, registration_url_internal,
+    complete_registration_internal, registration_url_internal,
 };
 use super::helpers::{c_str_to_string, reset_out_ptr};
 use crate::errors::WispersStatus;
@@ -94,16 +94,4 @@ pub extern "C" fn wispers_pending_state_complete_registration(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn wispers_registered_state_delete(
-    handle: *mut WispersRegisteredNodeStateHandle,
-) -> WispersStatus {
-    if handle.is_null() {
-        return WispersStatus::NullPointer;
-    }
-    let wrapper = unsafe { Box::from_raw(handle) };
-    match delete_registered_internal(wrapper.0) {
-        Ok(_) => WispersStatus::Success,
-        Err(status) => status,
-    }
-}
+// TODO: wispers_registered_state_logout_async - requires async FFI with callbacks

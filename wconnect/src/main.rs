@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use wispers_connect::{FileNodeStateStore, NodeStateStore, NodeStateStage, NodeStorage};
+use wispers_connect::{FileNodeStateStore, NodeStateStage, NodeStorage};
 
 #[derive(Parser)]
 #[command(name = "wconnect")]
@@ -183,32 +183,7 @@ async fn logout(hub_override: Option<&str>) -> Result<()> {
         .await
         .context("failed to load node state")?;
 
-    match stage {
-        NodeStateStage::Pending(p) => {
-            let app = p.app_namespace().clone();
-            let profile = p.profile_namespace().clone();
-            drop(p);
-            let store = FileNodeStateStore::with_app_name("wconnect")
-                .context("could not determine config directory")?;
-            store.delete(&app, &profile).context("failed to delete state")?;
-            println!("State cleared.");
-        }
-        NodeStateStage::Registered(r) => {
-            r.delete().context("failed to delete state")?;
-            println!("Credentials cleared.");
-        }
-        NodeStateStage::Activated(_) => {
-            // TODO: proper revocation. For now, just delete local state.
-            let store = FileNodeStateStore::with_app_name("wconnect")
-                .context("could not determine config directory")?;
-            store
-                .delete(
-                    &wispers_connect::AppNamespace::from("unused"),
-                    &wispers_connect::ProfileNamespace::default(),
-                )
-                .context("failed to delete state")?;
-            println!("Credentials cleared (note: node not revoked from roster).");
-        }
-    }
+    stage.logout().await.context("failed to logout")?;
+    println!("Logged out.");
     Ok(())
 }

@@ -12,8 +12,7 @@ pub use manager::{
 };
 pub use nodes::{
     wispers_pending_state_complete_registration, wispers_pending_state_free,
-    wispers_pending_state_registration_url, wispers_registered_state_delete,
-    wispers_registered_state_free,
+    wispers_pending_state_registration_url, wispers_registered_state_free,
 };
 
 pub use crate::storage::foreign::WispersNodeStateStoreCallbacks;

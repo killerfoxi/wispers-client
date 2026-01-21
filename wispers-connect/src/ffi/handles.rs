@@ -60,13 +60,7 @@ impl From<NodeStateError<ForeignStoreError>> for WispersStatus {
 }
 
 // TODO: restore_or_init requires async FFI with callbacks (deferred)
-
-pub fn delete_registered_internal(registered: RegisteredImpl) -> Result<(), WispersStatus> {
-    match registered {
-        RegisteredImpl::InMemory(inner) => inner.delete().map_err(Into::into),
-        RegisteredImpl::Foreign(inner) => inner.delete().map_err(Into::into),
-    }
-}
+// TODO: logout requires async FFI with callbacks (deferred)
 
 pub fn complete_registration_internal(
     pending: PendingImpl,
