@@ -101,10 +101,10 @@ The runner internally:
 - [x] New command: `wconnect get-pairing-code` (talks to daemon)
 - [x] Update `wconnect status` to show daemon info if available
 
-### 6. (Future) True daemonization
-- [ ] Add `-d` flag to detach and run in background
-- [ ] Redirect stdout/stderr to log file
-- [ ] Add `wconnect serve --stop` to shut down daemon
+### 6. True daemonization ✓
+- [x] Add `-d` flag to detach and run in background
+- [x] Redirect stdout/stderr to log file (`~/.wconnect/logs/{cg_id}-{node}.log`)
+- [x] Add `wconnect serve --stop` to shut down daemon
 
 ## JSON Protocol
 

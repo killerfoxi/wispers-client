@@ -35,9 +35,84 @@ enum Command {
     /// Clear stored credentials and state
     Logout,
     /// Start serving and handle incoming requests
-    Serve,
+    Serve {
+        /// Detach and run as a background daemon
+        #[arg(short = 'd', long)]
+        daemon: bool,
+
+        /// Stop a running daemon
+        #[arg(long)]
+        stop: bool,
+    },
     /// Get a pairing code to endorse a new node (requires running daemon)
     GetPairingCode,
+}
+
+/// Read registration info synchronously (for use before tokio starts).
+fn read_registration_sync() -> Result<(String, i32)> {
+    let storage = get_storage(None)?;
+    let reg = storage
+        .read_registration("unused", None::<String>)
+        .context("failed to read registration")?
+        .context("not registered")?;
+
+    Ok((reg.connectivity_group_id.to_string(), reg.node_number))
+}
+
+/// Stop a running daemon by sending shutdown command via socket.
+fn stop_daemon(_hub_override: Option<&str>) -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let (cg_id, node_number) = read_registration_sync()?;
+    let socket_path = daemon::socket_path(&cg_id, node_number);
+
+    let mut stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("daemon not running (socket {:?})", socket_path))?;
+
+    // Send shutdown command
+    writeln!(stream, r#"{{"cmd":"shutdown"}}"#)?;
+    stream.flush()?;
+
+    // Read response
+    let mut reader = BufReader::new(&stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+
+    if response.contains("\"ok\":true") {
+        println!("Daemon stopped.");
+        Ok(())
+    } else {
+        anyhow::bail!("Failed to stop daemon: {}", response.trim());
+    }
+}
+
+/// Daemonize the process before starting tokio.
+fn daemonize_serve(_hub_override: Option<&str>) -> Result<()> {
+    use daemonize::Daemonize;
+    use std::fs::{self, File};
+
+    let (cg_id, node_number) = read_registration_sync()?;
+
+    // Create log directory
+    let log_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".wconnect")
+        .join("logs");
+    fs::create_dir_all(&log_dir).context("failed to create log directory")?;
+
+    let log_path = log_dir.join(format!("{}-{}.log", cg_id, node_number));
+    let log_file = File::create(&log_path)
+        .with_context(|| format!("failed to create log file {:?}", log_path))?;
+
+    println!("Daemonizing, logging to {:?}", log_path);
+
+    let daemonize = Daemonize::new()
+        .stdout(log_file.try_clone()?)
+        .stderr(log_file);
+
+    daemonize.start().context("failed to daemonize")?;
+    Ok(())
 }
 
 fn get_storage(hub_override: Option<&str>) -> Result<NodeStorage<FileNodeStateStore>> {
@@ -50,18 +125,37 @@ fn get_storage(hub_override: Option<&str>) -> Result<NodeStorage<FileNodeStateSt
     Ok(storage)
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
-    let hub_override = cli.hub.as_deref();
+    let hub_override: Option<String> = cli.hub.clone();
 
-    match cli.command {
+    // Handle serve --stop synchronously (no need for tokio)
+    if let Command::Serve { stop: true, .. } = &cli.command {
+        return stop_daemon(hub_override.as_deref());
+    }
+
+    // Handle serve --daemon: daemonize before starting tokio
+    if let Command::Serve { daemon: true, .. } = &cli.command {
+        daemonize_serve(hub_override.as_deref())?;
+    }
+
+    // Start tokio runtime and run async main
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("failed to create tokio runtime")?
+        .block_on(async_main(cli.command, hub_override))
+}
+
+async fn async_main(command: Command, hub_override: Option<String>) -> Result<()> {
+    let hub_override = hub_override.as_deref();
+    match command {
         Command::Register { token } => register(hub_override, &token).await,
         Command::Activate { pairing_code } => activate(hub_override, &pairing_code).await,
         Command::Nodes => nodes(hub_override).await,
         Command::Status => status(hub_override).await,
         Command::Logout => logout(hub_override).await,
-        Command::Serve => serve(hub_override).await,
+        Command::Serve { daemon: _, stop: _ } => serve(hub_override).await,
         Command::GetPairingCode => get_pairing_code(hub_override).await,
     }
 }

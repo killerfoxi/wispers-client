@@ -39,6 +39,28 @@ impl<S: NodeStateStore> NodeStorage<S> {
         self.config.write().unwrap().hub_addr = addr.into();
     }
 
+    /// Read just the registration from local storage (sync, no hub contact).
+    ///
+    /// Returns `None` if not registered. This is useful when you need
+    /// registration info before starting an async runtime.
+    pub fn read_registration(
+        &self,
+        app_namespace: impl Into<AppNamespace>,
+        profile_namespace: Option<impl Into<ProfileNamespace>>,
+    ) -> Result<Option<NodeRegistration>, NodeStateError<S::Error>> {
+        let app_namespace = app_namespace.into();
+        let profile_namespace = profile_namespace
+            .map(Into::into)
+            .unwrap_or_else(ProfileNamespace::default);
+
+        let state = self
+            .store
+            .load(&app_namespace, &profile_namespace)
+            .map_err(NodeStateError::store)?;
+
+        Ok(state.and_then(|s| s.registration))
+    }
+
     /// Initialize or restore node state.
     ///
     /// Returns the current stage:
