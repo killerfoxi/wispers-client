@@ -110,6 +110,8 @@ async fn register(hub_override: Option<&str>, token: &str) -> Result<()> {
 }
 
 async fn activate(hub_override: Option<&str>, pairing_code: &str) -> Result<()> {
+    use wispers_connect::PairingCode;
+
     let storage = get_storage(hub_override)?;
     let stage = storage
         .restore_or_init_node_state("unused", None::<String>)
@@ -130,6 +132,18 @@ async fn activate(hub_override: Option<&str>, pairing_code: &str) -> Result<()> 
             );
         }
     };
+
+    // Parse pairing code to check for self-endorsement
+    let parsed_code = PairingCode::parse(pairing_code)
+        .context("invalid pairing code format")?;
+
+    let our_node_number = registered.registration().node_number;
+    if parsed_code.node_number == our_node_number {
+        anyhow::bail!(
+            "Cannot activate using your own pairing code (self-endorsement). \
+             You need a pairing code from a different node."
+        );
+    }
 
     println!("Activating with pairing code {}...", pairing_code);
 
