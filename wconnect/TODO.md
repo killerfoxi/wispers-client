@@ -94,12 +94,12 @@ The runner internally:
 - [x] Handle stale socket cleanup on startup (in DaemonServer::bind)
 - [x] Graceful shutdown when runner completes or shutdown requested
 
-### 5. Add daemon client mode to wconnect
-- [ ] Detect running daemon by trying to connect to socket
-- [ ] If daemon running: send JSON command via UDS, display result
-- [ ] If no daemon: error with helpful message
-- [ ] New command: `wconnect get-pairing-code` (talks to daemon)
-- [ ] Update `wconnect status` to show daemon info if available
+### 5. Add daemon client mode to wconnect ✓
+- [x] Detect running daemon by trying to connect to socket
+- [x] If daemon running: send JSON command via UDS, display result
+- [x] If no daemon: error with helpful message
+- [x] New command: `wconnect get-pairing-code` (talks to daemon)
+- [x] Update `wconnect status` to show daemon info if available
 
 ### 6. (Future) True daemonization
 - [ ] Add `-d` flag to detach and run in background

@@ -31,6 +31,8 @@ enum Command {
     Logout,
     /// Start serving and handle incoming requests
     Serve,
+    /// Get a pairing code to endorse a new node (requires running daemon)
+    GetPairingCode,
 }
 
 fn get_storage(hub_override: Option<&str>) -> Result<NodeStorage<FileNodeStateStore>> {
@@ -54,6 +56,7 @@ async fn main() -> Result<()> {
         Command::Status => status(hub_override).await,
         Command::Logout => logout(hub_override).await,
         Command::Serve => serve(hub_override).await,
+        Command::GetPairingCode => get_pairing_code(hub_override).await,
     }
 }
 
@@ -176,6 +179,33 @@ async fn status(hub_override: Option<&str>) -> Result<()> {
             println!("Activated:");
             println!("  Connectivity group: {}", reg.connectivity_group_id);
             println!("  Node number: {}", reg.node_number);
+
+            // Check if daemon is running
+            match daemon::DaemonClient::connect(&reg.connectivity_group_id.to_string(), reg.node_number).await {
+                Ok(mut client) => {
+                    match client.request(&daemon::Request::Status).await {
+                        Ok(daemon::Response::Success { data: daemon::ResponseData::Status(s), .. }) => {
+                            println!("  Daemon: running");
+                            if let Some(endorsing) = s.endorsing {
+                                match endorsing {
+                                    daemon::EndorsingData::AwaitingPairNode => {
+                                        println!("  Endorsing: awaiting pair node");
+                                    }
+                                    daemon::EndorsingData::AwaitingCosign { new_node_number } => {
+                                        println!("  Endorsing: awaiting cosign for node {}", new_node_number);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            println!("  Daemon: running (status unavailable)");
+                        }
+                    }
+                }
+                Err(_) => {
+                    println!("  Daemon: not running");
+                }
+            }
         }
     }
     Ok(())
@@ -267,6 +297,50 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
                     }
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+async fn get_pairing_code(hub_override: Option<&str>) -> Result<()> {
+    let storage = get_storage(hub_override)?;
+    let stage = storage
+        .restore_or_init_node_state("unused", None::<String>)
+        .await
+        .context("failed to load node state")?;
+
+    let reg = match &stage {
+        NodeStateStage::Pending(_) => {
+            anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
+        }
+        NodeStateStage::Registered(r) => r.registration(),
+        NodeStateStage::Activated(a) => a.registration(),
+    };
+
+    let cg_id = reg.connectivity_group_id.to_string();
+    let node_number = reg.node_number;
+
+    // Connect to daemon
+    let mut client = daemon::DaemonClient::connect(&cg_id, node_number)
+        .await
+        .context("Daemon not running. Start it with 'wconnect serve' first.")?;
+
+    // Request pairing code
+    let response = client
+        .request(&daemon::Request::GetPairingCode)
+        .await
+        .context("failed to communicate with daemon")?;
+
+    match response {
+        daemon::Response::Success { data: daemon::ResponseData::PairingCode(p), .. } => {
+            println!("{}", p.pairing_code);
+        }
+        daemon::Response::Error { error, .. } => {
+            anyhow::bail!("{}", error);
+        }
+        _ => {
+            anyhow::bail!("unexpected response from daemon");
         }
     }
 
