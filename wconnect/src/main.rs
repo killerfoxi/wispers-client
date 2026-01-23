@@ -426,11 +426,13 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
             NodeStateStage::Registered(r) => {
                 r.start_serving()
                     .await
+                    .map(|(handle, session, _incoming_rx)| (handle, session))
                     .context("failed to start serving")
             }
             NodeStateStage::Activated(a) => {
                 a.start_serving()
                     .await
+                    .map(|(handle, session, _incoming_rx)| (handle, session))
                     .context("failed to start serving")
             }
         };

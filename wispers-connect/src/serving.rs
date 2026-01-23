@@ -4,10 +4,15 @@
 //! - `ServingSession` is the runner that owns the event loop and state
 //! - `ServingHandle` is a clone-able handle for sending commands to the session
 
-use crate::crypto::{generate_nonce, PairingCode, PairingSecret, SigningKeyPair};
+use std::sync::atomic::{AtomicI64, Ordering};
+
+use crate::crypto::{generate_nonce, PairingCode, PairingSecret, SigningKeyPair, X25519KeyPair};
 use crate::hub::proto;
 use crate::hub::ServingConnection;
+use crate::ice::IceAnswerer;
+use crate::p2p::P2pConnectionAnswerer;
 use crate::types::ConnectivityGroupId;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use prost::Message;
 use tokio::sync::{mpsc, oneshot};
 
@@ -20,6 +25,19 @@ pub enum ServingError {
     SessionShutdown,
     #[error("already have active pairing session")]
     PairingSessionActive,
+}
+
+/// Configuration for P2P connection handling (optional).
+///
+/// When provided, the serving session can accept incoming P2P connections.
+/// When not provided (e.g., for RegisteredNodeState), connection requests are rejected.
+pub struct P2pConfig {
+    /// X25519 key pair for key exchange.
+    pub x25519_key: X25519KeyPair,
+    /// Hub address for fetching fresh roster on each connection request.
+    pub hub_addr: String,
+    /// Node registration for authenticating with the hub.
+    pub registration: crate::types::NodeRegistration,
 }
 
 /// Information about the current serving session status.
@@ -109,19 +127,33 @@ pub struct ServingSession {
     // Endorsing state
     pairing_secret: Option<PairingSecret>,
     pending_endorsement: Option<PendingEndorsement>,
+    // P2P state (only for activated nodes)
+    p2p_config: Option<P2pConfig>,
+    incoming_conn_tx: Option<mpsc::Sender<P2pConnectionAnswerer>>,
+    connection_id_counter: AtomicI64,
 }
 
 impl ServingSession {
     /// Create a new serving session.
     ///
     /// Returns a handle for sending commands and the session runner.
+    /// When `p2p_config` is provided, also returns a receiver for incoming P2P connections.
     pub fn new(
         conn: ServingConnection,
         signing_key: SigningKeyPair,
         connectivity_group_id: ConnectivityGroupId,
         node_number: i32,
-    ) -> (ServingHandle, Self) {
+        p2p_config: Option<P2pConfig>,
+    ) -> (ServingHandle, Self, Option<mpsc::Receiver<P2pConnectionAnswerer>>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
+
+        // Create incoming connection channel if P2P is enabled
+        let (incoming_conn_tx, incoming_conn_rx) = if p2p_config.is_some() {
+            let (tx, rx) = mpsc::channel(16);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
         let handle = ServingHandle { cmd_tx };
         let session = Self {
@@ -132,9 +164,12 @@ impl ServingSession {
             node_number,
             pairing_secret: None,
             pending_endorsement: None,
+            p2p_config,
+            incoming_conn_tx,
+            connection_id_counter: AtomicI64::new(1),
         };
 
-        (handle, session)
+        (handle, session, incoming_conn_rx)
     }
 
     /// Run the serving event loop.
@@ -486,18 +521,160 @@ impl ServingSession {
         request_id: i64,
         req: proto::StartConnectionRequest,
     ) {
+        use crate::hub::HubClient;
+
         println!(
-            "  StartConnectionRequest from node (caller), answerer_node={}",
+            "  StartConnectionRequest from caller, answerer_node={}",
             req.answerer_node_number
         );
-        // TODO: Phase 1.3 - Implement P2P connection handling
-        // 1. Verify caller's signature against roster
-        // 2. Create IceAnswerer with caller's SDP
-        // 3. Generate connection_id
-        // 4. Send StartConnectionResponse with our SDP
-        // 5. Complete ICE negotiation
-        // 6. Send P2pConnection to incoming_rx channel
-        self.send_error_response(request_id, "P2P connections not yet implemented").await;
+
+        // Check P2P is enabled
+        let Some(p2p_config) = &self.p2p_config else {
+            println!("  P2P not enabled (node may not be activated)");
+            self.send_error_response(request_id, "P2P connections not available").await;
+            return;
+        };
+
+        // Parse caller's X25519 public key
+        let caller_x25519_public: [u8; 32] = match req.caller_x25519_public_key.clone().try_into() {
+            Ok(key) => key,
+            Err(_) => {
+                println!("  Invalid X25519 public key length");
+                self.send_error_response(request_id, "invalid X25519 public key").await;
+                return;
+            }
+        };
+
+        // Fetch fresh roster and STUN/TURN config from hub
+        // This ensures we have the latest roster (including recently activated nodes)
+        let mut client = match HubClient::connect(&p2p_config.hub_addr).await {
+            Ok(c) => c,
+            Err(e) => {
+                println!("  Failed to connect to hub: {}", e);
+                self.send_error_response(request_id, "internal error").await;
+                return;
+            }
+        };
+
+        let roster = match client.get_roster(&p2p_config.registration).await {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  Failed to fetch roster: {}", e);
+                self.send_error_response(request_id, "internal error").await;
+                return;
+            }
+        };
+
+        // Verify caller's Ed25519 signature against roster
+        // We try each roster node's public key until we find one that verifies
+        let mut caller_node_number: Option<i32> = None;
+        for node in &roster.nodes {
+            if node.node_number == self.node_number {
+                continue; // Skip ourselves
+            }
+
+            // Try to verify the signature with this node's Ed25519 public key
+            let Ok(pubkey_bytes): Result<[u8; 32], _> = node.public_key_spki.clone().try_into() else {
+                continue;
+            };
+
+            let Ok(verifying_key) = VerifyingKey::from_bytes(&pubkey_bytes) else {
+                continue;
+            };
+
+            // Reconstruct the signed message: answerer_node_number || caller_x25519_public_key || caller_sdp
+            let mut message_to_verify = Vec::new();
+            message_to_verify.extend_from_slice(&req.answerer_node_number.to_le_bytes());
+            message_to_verify.extend_from_slice(&req.caller_x25519_public_key);
+            message_to_verify.extend_from_slice(req.caller_sdp.as_bytes());
+
+            let Ok(signature_bytes): Result<[u8; 64], _> = req.signature.clone().try_into() else {
+                continue;
+            };
+            let signature = Signature::from_bytes(&signature_bytes);
+
+            if verifying_key.verify(&message_to_verify, &signature).is_ok() {
+                caller_node_number = Some(node.node_number);
+                println!("  Verified caller signature: node {}", node.node_number);
+                break;
+            }
+        }
+
+        let Some(caller_node_number) = caller_node_number else {
+            println!("  Signature verification failed - caller not in roster or bad signature");
+            self.send_error_response(request_id, "signature verification failed").await;
+            return;
+        };
+
+        // Generate connection ID
+        let connection_id = self.connection_id_counter.fetch_add(1, Ordering::Relaxed);
+
+        // Create IceAnswerer with caller's SDP
+        // Use the STUN/TURN config provided by caller to ensure TURN relaying works
+        let Some(stun_turn_config) = &req.stun_turn_config else {
+            println!("  Missing STUN/TURN config in request");
+            self.send_error_response(request_id, "missing STUN/TURN config").await;
+            return;
+        };
+        let ice_answerer = match IceAnswerer::new(&req.caller_sdp, stun_turn_config) {
+            Ok(answerer) => answerer,
+            Err(e) => {
+                println!("  Failed to create ICE answerer: {}", e);
+                self.send_error_response(request_id, &format!("ICE error: {}", e)).await;
+                return;
+            }
+        };
+
+        let answerer_sdp = ice_answerer.local_description().to_string();
+
+        // Sign our response: connection_id || answerer_x25519_public_key || answerer_sdp
+        let mut message_to_sign = Vec::new();
+        message_to_sign.extend_from_slice(&connection_id.to_le_bytes());
+        message_to_sign.extend_from_slice(&p2p_config.x25519_key.public_key());
+        message_to_sign.extend_from_slice(answerer_sdp.as_bytes());
+        let signature = self.signing_key.sign(&message_to_sign);
+
+        // Compute shared secret
+        let shared_secret = p2p_config.x25519_key.diffie_hellman(&caller_x25519_public);
+
+        // Send response
+        let response = proto::ServingResponse {
+            request_id,
+            error: String::new(),
+            kind: Some(proto::serving_response::Kind::StartConnectionResponse(
+                proto::StartConnectionResponse {
+                    connection_id,
+                    answerer_x25519_public_key: p2p_config.x25519_key.public_key().to_vec(),
+                    answerer_sdp,
+                    signature,
+                },
+            )),
+        };
+
+        if let Err(e) = self.conn.response_tx.send(response).await {
+            eprintln!("  Failed to send StartConnectionResponse: {}", e);
+            return;
+        }
+
+        println!("  Sent StartConnectionResponse, connection_id={}", connection_id);
+
+        // Create the P2pConnectionAnswerer and spawn task to complete ICE and deliver
+        let p2p_conn = P2pConnectionAnswerer::new(
+            caller_node_number,
+            connection_id,
+            ice_answerer,
+            shared_secret,
+        );
+
+        // Deliver the connection to the incoming channel
+        // The ICE connection will complete asynchronously; the receiver should call connect()
+        if let Some(tx) = &self.incoming_conn_tx {
+            if let Err(e) = tx.send(p2p_conn).await {
+                eprintln!("  Failed to deliver incoming connection: {}", e);
+            } else {
+                println!("  Delivered incoming connection to channel");
+            }
+        }
     }
 
     async fn send_error_response(&mut self, request_id: i64, error: &str) {

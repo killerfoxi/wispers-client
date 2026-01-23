@@ -155,6 +155,7 @@ message StartConnectionRequest {
   bytes caller_x25519_public_key = 2;
   string caller_sdp = 3;        // ICE candidates + ufrag/pwd (opaque from libjuice)
   bytes signature = 4;          // Ed25519 signature over fields 1-3
+  StunTurnConfig stun_turn_config = 5;  // Config used by caller; answerer must use same
 }
 
 // Returned by answerer, forwarded back to caller.

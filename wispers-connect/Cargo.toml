@@ -29,4 +29,6 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 zeroize = "1.8"
 
 [build-dependencies]
+bindgen = "0.71"
+cmake = "0.1"
 tonic-build = "0.12"

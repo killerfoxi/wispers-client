@@ -56,33 +56,41 @@ impl SigningKeyPair {
 }
 
 /// X25519 key exchange keypair derived from the root key.
+///
+/// This stores the seed rather than the secret directly, since
+/// `X25519StaticSecret` doesn't implement Clone. The secret is
+/// derived on-demand for cryptographic operations.
 #[derive(Clone)]
 pub struct X25519KeyPair {
-    secret: X25519StaticSecret,
+    seed: [u8; 32],
 }
 
 impl X25519KeyPair {
     /// Derive an X25519 keypair from the root key using HKDF.
     pub fn derive_from_root_key(root_key: &[u8; 32]) -> Self {
         let hk = Hkdf::<Sha256>::new(Some(b"wispers-connect-v1"), root_key);
-        let mut x25519_seed = [0u8; 32];
-        hk.expand(b"x25519-key", &mut x25519_seed)
+        let mut seed = [0u8; 32];
+        hk.expand(b"x25519-key", &mut seed)
             .expect("32 bytes is valid for HKDF-SHA256");
 
-        let secret = X25519StaticSecret::from(x25519_seed);
-        Self { secret }
+        Self { seed }
+    }
+
+    /// Get the secret (derived from seed).
+    fn secret(&self) -> X25519StaticSecret {
+        X25519StaticSecret::from(self.seed)
     }
 
     /// Get the public key as raw bytes.
     pub fn public_key(&self) -> [u8; 32] {
-        X25519PublicKey::from(&self.secret).to_bytes()
+        X25519PublicKey::from(&self.secret()).to_bytes()
     }
 
     /// Perform Diffie-Hellman key exchange with a peer's public key.
     /// Returns the shared secret.
     pub fn diffie_hellman(&self, peer_public: &[u8; 32]) -> [u8; 32] {
         let peer_public = X25519PublicKey::from(*peer_public);
-        self.secret.diffie_hellman(&peer_public).to_bytes()
+        self.secret().diffie_hellman(&peer_public).to_bytes()
     }
 }
 

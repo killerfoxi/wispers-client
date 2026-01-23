@@ -364,17 +364,24 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
     ///
     /// This allows a registered (but not yet activated) node to serve,
     /// which is needed during bootstrap when no nodes are activated yet.
+    /// Note: Registered nodes cannot accept P2P connections (no roster yet).
     ///
     /// # Example
     /// ```ignore
-    /// let (handle, session) = registered.start_serving().await?;
+    /// let (handle, session, _) = registered.start_serving().await?;
     /// tokio::spawn(async move { session.run().await });
     /// let code = handle.generate_pairing_secret().await?;
     /// ```
     pub async fn start_serving(
         &self,
-    ) -> Result<(crate::serving::ServingHandle, crate::serving::ServingSession), NodeStateError<S::Error>>
-    {
+    ) -> Result<
+        (
+            crate::serving::ServingHandle,
+            crate::serving::ServingSession,
+            Option<tokio::sync::mpsc::Receiver<crate::p2p::P2pConnectionAnswerer>>,
+        ),
+        NodeStateError<S::Error>,
+    > {
         let reg = self.registration();
         println!(
             "Starting serving session for node {} in group {} (not yet activated)",
@@ -384,7 +391,7 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
         let signing_key = SigningKeyPair::derive_from_root_key(self.state.root_key.as_bytes());
         let hub_addr = self.config.read().unwrap().hub_addr.clone();
 
-        start_serving_impl(&hub_addr, signing_key, reg)
+        start_serving_impl(&hub_addr, signing_key, reg, None)
             .await
             .map_err(NodeStateError::hub)
     }
@@ -583,20 +590,33 @@ impl<S: NodeStateStore> ActivatedNode<S> {
 
     /// Start a serving session.
     ///
-    /// Connects to the hub and returns a handle + session pair.
+    /// Connects to the hub and returns a handle + session pair + incoming connection receiver.
     /// The session should be spawned to run the event loop, while the handle
     /// can be used to send commands (e.g., generate pairing codes).
+    /// The incoming connection receiver delivers P2P connections from other nodes.
     ///
     /// # Example
     /// ```ignore
-    /// let (handle, session) = activated.start_serving().await?;
+    /// let (handle, session, incoming_rx) = activated.start_serving().await?;
     /// tokio::spawn(async move { session.run().await });
-    /// let code = handle.generate_pairing_secret().await?;
+    /// // Handle incoming P2P connections
+    /// while let Some(conn) = incoming_rx.recv().await {
+    ///     conn.connect().await?; // Complete ICE
+    ///     // ... use conn
+    /// }
     /// ```
     pub async fn start_serving(
         &self,
-    ) -> Result<(crate::serving::ServingHandle, crate::serving::ServingSession), NodeStateError<S::Error>>
-    {
+    ) -> Result<
+        (
+            crate::serving::ServingHandle,
+            crate::serving::ServingSession,
+            Option<tokio::sync::mpsc::Receiver<crate::p2p::P2pConnectionAnswerer>>,
+        ),
+        NodeStateError<S::Error>,
+    > {
+        use crate::serving::P2pConfig;
+
         println!(
             "Starting serving session for node {} in group {}",
             self.registration.node_number, self.registration.connectivity_group_id
@@ -605,9 +625,20 @@ impl<S: NodeStateStore> ActivatedNode<S> {
 
         let hub_addr = self.config.read().unwrap().hub_addr.clone();
 
-        start_serving_impl(&hub_addr, self.signing_key.clone(), &self.registration)
-            .await
-            .map_err(NodeStateError::hub)
+        let p2p_config = P2pConfig {
+            x25519_key: self.x25519_key.clone(),
+            hub_addr: hub_addr.clone(),
+            registration: self.registration.clone(),
+        };
+
+        start_serving_impl(
+            &hub_addr,
+            self.signing_key.clone(),
+            &self.registration,
+            Some(p2p_config),
+        )
+        .await
+        .map_err(NodeStateError::hub)
     }
 
     /// Connect to a peer node.
@@ -618,7 +649,7 @@ impl<S: NodeStateStore> ActivatedNode<S> {
     /// # Example
     /// ```ignore
     /// let conn = activated.connect_to(42).await?;
-    /// conn.send(b"hello").await?;
+    /// conn.send(b"hello")?;
     /// let response = conn.recv().await?;
     /// ```
     pub async fn connect_to(
@@ -626,6 +657,7 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         peer_node_number: i32,
     ) -> Result<crate::p2p::P2pConnection, crate::p2p::P2pError> {
         use crate::hub::HubClient;
+        use crate::ice::IceCaller;
         use crate::p2p::{P2pConnection, P2pError};
 
         let hub_addr = self.config.read().unwrap().hub_addr.clone();
@@ -634,13 +666,13 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         let mut client = HubClient::connect(&hub_addr).await?;
 
         // Get STUN/TURN configuration
-        let _stun_turn_config = client
+        let stun_turn_config = client
             .get_stun_turn_config(&self.registration)
             .await?;
 
-        // TODO Phase 2: Use stun_turn_config to create ICE agent and gather candidates
-        // For now, use a placeholder SDP
-        let caller_sdp = "placeholder-sdp".to_string();
+        // Create ICE caller and gather candidates
+        let ice_caller = IceCaller::new(&stun_turn_config)?;
+        let caller_sdp = ice_caller.local_description().to_string();
 
         // Build the StartConnectionRequest
         // Sign: answerer_node_number || caller_x25519_public_key || caller_sdp
@@ -655,6 +687,7 @@ impl<S: NodeStateStore> ActivatedNode<S> {
             caller_x25519_public_key: self.x25519_key.public_key().to_vec(),
             caller_sdp,
             signature,
+            stun_turn_config: Some(stun_turn_config),
         };
 
         // Send to hub, which forwards to the answerer
@@ -663,20 +696,23 @@ impl<S: NodeStateStore> ActivatedNode<S> {
             .await?;
 
         // TODO: Verify answerer's signature against roster
-        // For now, just extract the shared secret
+
+        // Extract peer's X25519 public key
         let peer_x25519_public: [u8; 32] = response
             .answerer_x25519_public_key
             .try_into()
             .map_err(|_| P2pError::SignatureVerificationFailed)?;
 
+        // Derive shared secret
         let shared_secret = self.x25519_key.diffie_hellman(&peer_x25519_public);
 
-        // TODO Phase 2: Use response.answerer_sdp to complete ICE negotiation
-        // For now, return a connection that will fail on send/recv
+        // Complete ICE connection with answerer's SDP
+        ice_caller.connect(&response.answerer_sdp).await?;
 
         Ok(P2pConnection::new(
             peer_node_number,
             response.connection_id,
+            ice_caller,
             shared_secret,
         ))
     }
@@ -687,21 +723,30 @@ async fn start_serving_impl(
     hub_addr: &str,
     signing_key: SigningKeyPair,
     registration: &NodeRegistration,
-) -> Result<(crate::serving::ServingHandle, crate::serving::ServingSession), crate::hub::HubError> {
+    p2p_config: Option<crate::serving::P2pConfig>,
+) -> Result<
+    (
+        crate::serving::ServingHandle,
+        crate::serving::ServingSession,
+        Option<tokio::sync::mpsc::Receiver<crate::p2p::P2pConnectionAnswerer>>,
+    ),
+    crate::hub::HubError,
+> {
     use crate::hub::HubClient;
     use crate::serving::ServingSession;
 
     let mut client = HubClient::connect(hub_addr).await?;
     let conn = client.start_serving(registration).await?;
 
-    let (handle, session) = ServingSession::new(
+    let (handle, session, incoming_rx) = ServingSession::new(
         conn,
         signing_key,
         registration.connectivity_group_id.clone(),
         registration.node_number,
+        p2p_config,
     );
 
-    Ok((handle, session))
+    Ok((handle, session, incoming_rx))
 }
 
 #[cfg(test)]
