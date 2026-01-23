@@ -261,8 +261,8 @@ impl ServingSession {
 
     async fn handle_hub_request(&mut self, request: proto::ServingRequest) {
         println!(
-            "Received request: id={} dest_node={}",
-            request.request_id, request.dest_node_number
+            "Received request: id={} src_node={} dest_node={}",
+            request.request_id, request.source_node_number, request.dest_node_number
         );
 
         match request.kind {
@@ -276,7 +276,7 @@ impl ServingSession {
                 self.handle_roster_cosign_request(request.request_id, req).await;
             }
             Some(proto::serving_request::Kind::StartConnectionRequest(req)) => {
-                self.handle_start_connection_request(request.request_id, req).await;
+                self.handle_start_connection_request(request.request_id, request.source_node_number, req).await;
             }
             None => {
                 println!("  Unknown request kind");
@@ -519,13 +519,14 @@ impl ServingSession {
     async fn handle_start_connection_request(
         &mut self,
         request_id: i64,
+        caller_node_number: i32,
         req: proto::StartConnectionRequest,
     ) {
         use crate::hub::HubClient;
 
         println!(
-            "  StartConnectionRequest from caller, answerer_node={}",
-            req.answerer_node_number
+            "  StartConnectionRequest from node {}, answerer_node={}",
+            caller_node_number, req.answerer_node_number
         );
 
         // Check P2P is enabled
@@ -545,7 +546,7 @@ impl ServingSession {
             }
         };
 
-        // Fetch fresh roster and STUN/TURN config from hub
+        // Fetch fresh roster from hub to get caller's Ed25519 public key
         // This ensures we have the latest roster (including recently activated nodes)
         let mut client = match HubClient::connect(&p2p_config.hub_addr).await {
             Ok(c) => c,
@@ -565,46 +566,45 @@ impl ServingSession {
             }
         };
 
-        // Verify caller's Ed25519 signature against roster
-        // We try each roster node's public key until we find one that verifies
-        let mut caller_node_number: Option<i32> = None;
-        for node in &roster.nodes {
-            if node.node_number == self.node_number {
-                continue; // Skip ourselves
-            }
-
-            // Try to verify the signature with this node's Ed25519 public key
-            let Ok(pubkey_bytes): Result<[u8; 32], _> = node.public_key_spki.clone().try_into() else {
-                continue;
-            };
-
-            let Ok(verifying_key) = VerifyingKey::from_bytes(&pubkey_bytes) else {
-                continue;
-            };
-
-            // Reconstruct the signed message: answerer_node_number || caller_x25519_public_key || caller_sdp
-            let mut message_to_verify = Vec::new();
-            message_to_verify.extend_from_slice(&req.answerer_node_number.to_le_bytes());
-            message_to_verify.extend_from_slice(&req.caller_x25519_public_key);
-            message_to_verify.extend_from_slice(req.caller_sdp.as_bytes());
-
-            let Ok(signature_bytes): Result<[u8; 64], _> = req.signature.clone().try_into() else {
-                continue;
-            };
-            let signature = Signature::from_bytes(&signature_bytes);
-
-            if verifying_key.verify(&message_to_verify, &signature).is_ok() {
-                caller_node_number = Some(node.node_number);
-                println!("  Verified caller signature: node {}", node.node_number);
-                break;
-            }
-        }
-
-        let Some(caller_node_number) = caller_node_number else {
-            println!("  Signature verification failed - caller not in roster or bad signature");
-            self.send_error_response(request_id, "signature verification failed").await;
+        // Look up caller's Ed25519 public key in roster
+        let Some(caller_node) = roster.nodes.iter().find(|n| n.node_number == caller_node_number) else {
+            println!("  Caller node {} not found in roster", caller_node_number);
+            self.send_error_response(request_id, "caller not in roster").await;
             return;
         };
+
+        let Ok(pubkey_bytes): Result<[u8; 32], _> = caller_node.public_key_spki.clone().try_into() else {
+            println!("  Invalid public key format for node {}", caller_node_number);
+            self.send_error_response(request_id, "invalid caller public key").await;
+            return;
+        };
+
+        let Ok(verifying_key) = VerifyingKey::from_bytes(&pubkey_bytes) else {
+            println!("  Failed to parse Ed25519 key for node {}", caller_node_number);
+            self.send_error_response(request_id, "invalid caller public key").await;
+            return;
+        };
+
+        // Verify caller's Ed25519 signature
+        let mut message_to_verify = Vec::new();
+        message_to_verify.extend_from_slice(&req.answerer_node_number.to_le_bytes());
+        message_to_verify.extend_from_slice(&req.caller_x25519_public_key);
+        message_to_verify.extend_from_slice(req.caller_sdp.as_bytes());
+
+        let Ok(signature_bytes): Result<[u8; 64], _> = req.signature.clone().try_into() else {
+            println!("  Invalid signature format");
+            self.send_error_response(request_id, "invalid signature").await;
+            return;
+        };
+        let signature = Signature::from_bytes(&signature_bytes);
+
+        if verifying_key.verify(&message_to_verify, &signature).is_err() {
+            println!("  Signature verification failed for node {}", caller_node_number);
+            self.send_error_response(request_id, "signature verification failed").await;
+            return;
+        }
+
+        println!("  Verified caller signature: node {}", caller_node_number);
 
         // Generate connection ID
         let connection_id = self.connection_id_counter.fetch_add(1, Ordering::Relaxed);
