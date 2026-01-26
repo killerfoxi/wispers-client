@@ -46,6 +46,11 @@ enum Command {
     },
     /// Get a pairing code to endorse a new node (requires running daemon)
     GetPairingCode,
+    /// Ping another node via P2P connection
+    Ping {
+        /// The node number to ping
+        node_number: i32,
+    },
 }
 
 /// Read registration info synchronously (for use before tokio starts).
@@ -157,6 +162,7 @@ async fn async_main(command: Command, hub_override: Option<String>) -> Result<()
         Command::Logout => logout(hub_override).await,
         Command::Serve { daemon: _, stop: _ } => serve(hub_override).await,
         Command::GetPairingCode => get_pairing_code(hub_override).await,
+        Command::Ping { node_number } => ping(hub_override, node_number).await,
     }
 }
 
@@ -380,7 +386,10 @@ async fn logout(hub_override: Option<&str>) -> Result<()> {
 async fn serve(hub_override: Option<&str>) -> Result<()> {
     use std::sync::Arc;
     use tokio::sync::RwLock;
+    use wispers_connect::p2p::P2pConnectionAnswerer;
     use wispers_connect::{ServingHandle, ServingSession};
+
+    type IncomingRx = Option<tokio::sync::mpsc::Receiver<P2pConnectionAnswerer>>;
 
     let storage = get_storage(hub_override)?;
     let stage = storage
@@ -421,23 +430,23 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
     // Spawn hub connection in background
     let connect_handle_state = handle_state.clone();
     let mut connect_task = tokio::spawn(async move {
-        let result: Result<(ServingHandle, ServingSession), anyhow::Error> = match stage {
+        let result: Result<(ServingHandle, ServingSession, IncomingRx), anyhow::Error> = match stage {
             NodeStateStage::Pending(_) => unreachable!(),
             NodeStateStage::Registered(r) => {
                 r.start_serving()
                     .await
-                    .map(|(handle, session, _incoming_rx)| (handle, session))
+                    .map(|(handle, session, incoming_rx)| (handle, session, incoming_rx))
                     .context("failed to start serving")
             }
             NodeStateStage::Activated(a) => {
                 a.start_serving()
                     .await
-                    .map(|(handle, session, _incoming_rx)| (handle, session))
+                    .map(|(handle, session, incoming_rx)| (handle, session, incoming_rx))
                     .context("failed to start serving")
             }
         };
 
-        if let Ok((handle, _session)) = &result {
+        if let Ok((handle, _session, _)) = &result {
             *connect_handle_state.write().await = Some(handle.clone());
         }
         result
@@ -445,6 +454,8 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
 
     // Session task (None until hub connects)
     let mut session_task: Option<tokio::task::JoinHandle<Result<(), wispers_connect::ServingError>>> = None;
+    // Incoming P2P connections receiver (None until hub connects, stays None for Registered state)
+    let mut incoming_rx: IncomingRx = None;
 
     // Accept daemon client connections, handle hub connection completing
     loop {
@@ -452,10 +463,14 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
             // Hub connection completed
             result = &mut connect_task, if session_task.is_none() => {
                 match result {
-                    Ok(Ok((handle, session))) => {
+                    Ok(Ok((handle, session, rx))) => {
                         println!("Connected to hub");
                         *handle_state.write().await = Some(handle);
                         session_task = Some(tokio::spawn(async move { session.run().await }));
+                        incoming_rx = rx;
+                        if incoming_rx.is_some() {
+                            println!("P2P connections enabled (activated node)");
+                        }
                     }
                     Ok(Err(e)) => {
                         return Err(e);
@@ -482,6 +497,17 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
                 }
             }
 
+            // Incoming P2P connection
+            Some(conn) = async {
+                match incoming_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                println!("Incoming P2P connection from node {}", conn.peer_node_number);
+                tokio::spawn(handle_p2p_connection(conn));
+            }
+
             // New daemon client connection
             result = daemon.accept() => {
                 match result {
@@ -500,6 +526,39 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Handle an incoming P2P connection (respond to pings).
+async fn handle_p2p_connection(conn: wispers_connect::p2p::P2pConnectionAnswerer) {
+    let peer = conn.peer_node_number;
+
+    // Complete ICE negotiation
+    if let Err(e) = conn.connect().await {
+        eprintln!("  P2P ICE failed for node {}: {}", peer, e);
+        return;
+    }
+    println!("  P2P connected to node {}", peer);
+
+    // Handle messages
+    loop {
+        match conn.recv().await {
+            Ok(data) => {
+                if data == b"ping" {
+                    println!("  Received ping from node {}, sending pong", peer);
+                    if let Err(e) = conn.send(b"pong") {
+                        eprintln!("  Failed to send pong to node {}: {}", peer, e);
+                        break;
+                    }
+                } else {
+                    println!("  Received {} bytes from node {}", data.len(), peer);
+                }
+            }
+            Err(e) => {
+                println!("  P2P connection to node {} closed: {}", peer, e);
+                break;
+            }
+        }
+    }
 }
 
 async fn get_pairing_code(hub_override: Option<&str>) -> Result<()> {
@@ -541,6 +600,66 @@ async fn get_pairing_code(hub_override: Option<&str>) -> Result<()> {
         _ => {
             anyhow::bail!("unexpected response from daemon");
         }
+    }
+
+    Ok(())
+}
+
+async fn ping(hub_override: Option<&str>, target_node: i32) -> Result<()> {
+    let storage = get_storage(hub_override)?;
+    let stage = storage
+        .restore_or_init_node_state("unused", None::<String>)
+        .await
+        .context("failed to load node state")?;
+
+    let activated = match stage {
+        NodeStateStage::Pending(_) => {
+            anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
+        }
+        NodeStateStage::Registered(_) => {
+            anyhow::bail!("Not activated. Use 'wconnect activate <pairing_code>' first.");
+        }
+        NodeStateStage::Activated(a) => a,
+    };
+
+    let our_node = activated.registration().node_number;
+    if target_node == our_node {
+        anyhow::bail!("Cannot ping yourself (node {}).", our_node);
+    }
+
+    println!("Pinging node {}...", target_node);
+
+    let start = std::time::Instant::now();
+
+    // Establish P2P connection
+    let conn = activated
+        .connect_to(target_node)
+        .await
+        .context("failed to connect")?;
+
+    let connect_time = start.elapsed();
+    println!("  Connected in {:?}", connect_time);
+
+    // Send ping
+    conn.send(b"ping").context("failed to send ping")?;
+
+    // Wait for pong with timeout
+    let pong_start = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn.recv(),
+    )
+    .await
+    .context("timeout waiting for pong")?
+    .context("failed to receive pong")?;
+
+    let rtt = pong_start.elapsed();
+
+    if response == b"pong" {
+        println!("  Pong received in {:?}", rtt);
+        println!("Ping successful! Total time: {:?}", start.elapsed());
+    } else {
+        println!("  Unexpected response: {:?}", String::from_utf8_lossy(&response));
     }
 
     Ok(())
