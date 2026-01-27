@@ -188,6 +188,7 @@ pub enum QuicState {
 pub struct QuicConnection<T> {
     conn: Mutex<Pin<Box<quiche::Connection>>>,
     transport: T,
+    role: QuicRole,
 }
 
 impl<T: IceTransport> QuicConnection<T> {
@@ -223,6 +224,7 @@ impl<T: IceTransport> QuicConnection<T> {
         Ok(Self {
             conn: Mutex::new(Box::pin(conn)),
             transport,
+            role,
         })
     }
 
@@ -330,6 +332,225 @@ impl<T: IceTransport> QuicConnection<T> {
             conn.close(true, 0, b"close")?;
         }
         self.flush_send().await?;
+        Ok(())
+    }
+
+    /// Open a new bidirectional stream.
+    ///
+    /// Returns a stream that can be used for reading and writing.
+    /// Both client and server can open streams (they use different ID ranges).
+    pub async fn open_stream(&self) -> Result<QuicStream<'_, T>, QuicError> {
+        // Stream ID assignment:
+        // - Client-initiated bidi: 0, 4, 8, ... (id % 4 == 0)
+        // - Server-initiated bidi: 1, 5, 9, ... (id % 4 == 1)
+        let base = match self.role {
+            QuicRole::Client => 0u64,
+            QuicRole::Server => 1u64,
+        };
+
+        let stream_id = {
+            let conn = self.conn.lock().await;
+            // Find next available stream ID for our role
+            let mut candidate = base;
+            while conn.stream_finished(candidate) {
+                candidate += 4;
+                if candidate > 1000 {
+                    return Err(QuicError::Stream("no available stream IDs".into()));
+                }
+            }
+            candidate
+        };
+
+        // Send a zero-byte write to "open" the stream
+        {
+            let mut conn = self.conn.lock().await;
+            match conn.stream_send(stream_id, &[], false) {
+                Ok(_) => {}
+                Err(quiche::Error::Done) => {}
+                Err(e) => return Err(QuicError::Quic(e)),
+            }
+        }
+
+        // Flush to notify the peer
+        self.flush_send().await?;
+
+        Ok(QuicStream {
+            conn: self,
+            stream_id,
+        })
+    }
+
+    /// Accept an incoming stream from the peer.
+    ///
+    /// Waits for the peer to open a new stream and returns it.
+    /// Either side can accept streams opened by the other.
+    pub async fn accept_stream(&self) -> Result<QuicStream<'_, T>, QuicError> {
+        loop {
+            // Check for readable streams (peer has opened and sent data)
+            {
+                let mut conn = self.conn.lock().await;
+                if let Some(stream_id) = conn.stream_readable_next() {
+                    return Ok(QuicStream {
+                        conn: self,
+                        stream_id,
+                    });
+                }
+
+                if conn.is_closed() {
+                    return Err(QuicError::ConnectionClosed);
+                }
+            }
+
+            // Drive the connection to receive more data
+            self.drive_once().await?;
+        }
+    }
+
+    /// Drive the connection once (receive packet, handle timeout).
+    async fn drive_once(&self) -> Result<(), QuicError> {
+        // Flush any pending outgoing data
+        self.flush_send().await?;
+
+        // Wait for incoming packet or timeout
+        let timeout = {
+            let conn = self.conn.lock().await;
+            conn.timeout()
+        };
+
+        let recv_result = if let Some(timeout) = timeout {
+            tokio::time::timeout(timeout, self.transport.recv()).await
+        } else {
+            Ok(self.transport.recv().await)
+        };
+
+        match recv_result {
+            Ok(Ok(packet)) => {
+                let mut conn = self.conn.lock().await;
+                let recv_info = quiche::RecvInfo {
+                    from: "127.0.0.1:0".parse().unwrap(),
+                    to: "127.0.0.1:0".parse().unwrap(),
+                };
+                match conn.recv(&mut packet.clone(), recv_info) {
+                    Ok(_) => {}
+                    Err(quiche::Error::Done) => {}
+                    Err(e) => return Err(QuicError::Quic(e)),
+                }
+            }
+            Ok(Err(e)) => return Err(QuicError::Ice(e)),
+            Err(_) => {
+                // Timeout
+                let mut conn = self.conn.lock().await;
+                conn.on_timeout();
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// A QUIC stream for reading and writing data.
+///
+/// Streams provide ordered, reliable byte delivery within a QUIC connection.
+pub struct QuicStream<'a, T> {
+    conn: &'a QuicConnection<T>,
+    stream_id: u64,
+}
+
+impl<'a, T: IceTransport> QuicStream<'a, T> {
+    /// Get the stream ID.
+    pub fn id(&self) -> u64 {
+        self.stream_id
+    }
+
+    /// Write data to the stream.
+    ///
+    /// Returns the number of bytes written. May write fewer bytes than
+    /// requested if the stream's flow control window is limited.
+    pub async fn write(&self, data: &[u8]) -> Result<usize, QuicError> {
+        let written = {
+            let mut conn = self.conn.conn.lock().await;
+            match conn.stream_send(self.stream_id, data, false) {
+                Ok(n) => n,
+                Err(quiche::Error::Done) => 0,
+                Err(e) => return Err(QuicError::Quic(e)),
+            }
+        };
+
+        // Flush to send the data
+        self.conn.flush_send().await?;
+
+        Ok(written)
+    }
+
+    /// Write all data to the stream.
+    ///
+    /// Keeps writing until all data is sent or an error occurs.
+    pub async fn write_all(&self, data: &[u8]) -> Result<(), QuicError> {
+        let mut offset = 0;
+        while offset < data.len() {
+            let written = self.write(&data[offset..]).await?;
+            if written == 0 {
+                // Flow control blocked, drive connection and retry
+                self.conn.drive_once().await?;
+            } else {
+                offset += written;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read data from the stream.
+    ///
+    /// Returns the number of bytes read. Returns 0 if the stream is finished.
+    pub async fn read(&self, buf: &mut [u8]) -> Result<usize, QuicError> {
+        loop {
+            // Try to read from the stream
+            {
+                let mut conn = self.conn.conn.lock().await;
+                match conn.stream_recv(self.stream_id, buf) {
+                    Ok((len, _fin)) => return Ok(len),
+                    Err(quiche::Error::Done) => {
+                        // No data available yet
+                        if conn.stream_finished(self.stream_id) {
+                            return Ok(0); // Stream finished
+                        }
+                    }
+                    Err(e) => return Err(QuicError::Quic(e)),
+                }
+
+                if conn.is_closed() {
+                    return Err(QuicError::ConnectionClosed);
+                }
+            }
+
+            // Drive connection to receive more data
+            self.conn.drive_once().await?;
+        }
+    }
+
+    /// Close the stream for writing (send FIN).
+    pub async fn finish(&self) -> Result<(), QuicError> {
+        {
+            let mut conn = self.conn.conn.lock().await;
+            match conn.stream_send(self.stream_id, &[], true) {
+                Ok(_) => {}
+                Err(quiche::Error::Done) => {}
+                Err(e) => return Err(QuicError::Quic(e)),
+            }
+        }
+        self.conn.flush_send().await?;
+        Ok(())
+    }
+
+    /// Shutdown the stream (stop sending and receiving).
+    pub async fn shutdown(&self) -> Result<(), QuicError> {
+        {
+            let mut conn = self.conn.conn.lock().await;
+            // Shutdown both directions
+            let _ = conn.stream_shutdown(self.stream_id, quiche::Shutdown::Read, 0);
+            let _ = conn.stream_shutdown(self.stream_id, quiche::Shutdown::Write, 0);
+        }
+        self.conn.flush_send().await?;
         Ok(())
     }
 }
