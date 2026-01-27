@@ -98,7 +98,7 @@ async fn test_p2p_connection_via_hub() {
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Node 1 connects to node 2
-    let caller_conn = node1.connect_to(2).await.expect("node1 connects to node2");
+    let caller_conn = node1.connect_udp(2).await.expect("node1 connects to node2");
 
     // Node 2 receives the incoming connection (on UDP channel, already connected)
     let answerer_conn = incoming_rx.udp.recv().await.expect("node2 receives connection")
@@ -153,7 +153,7 @@ async fn test_p2p_multiple_messages() {
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let caller = node1.connect_to(2).await.expect("connects");
+    let caller = node1.connect_udp(2).await.expect("connects");
     let answerer = incoming_rx.udp.recv().await.expect("receives connection")
         .expect("connection handshake succeeds");
 

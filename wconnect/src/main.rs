@@ -745,7 +745,7 @@ async fn ping(hub_override: Option<&str>, target_node: i32) -> Result<()> {
 
     // Establish P2P connection
     let conn = activated
-        .connect_to(target_node)
+        .connect_udp(target_node)
         .await
         .context("failed to connect")?;
 

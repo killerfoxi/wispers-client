@@ -659,18 +659,19 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         .map_err(NodeStateError::hub)
     }
 
-    /// Connect to a peer node.
+    /// Connect to a peer node using UDP transport.
     ///
     /// This establishes a P2P connection to the specified peer using ICE for
     /// NAT traversal. The connection is encrypted using X25519 key exchange.
+    /// UDP provides raw datagram delivery - low overhead but unreliable.
     ///
     /// # Example
     /// ```ignore
-    /// let conn = activated.connect_to(42).await?;
+    /// let conn = activated.connect_udp(42).await?;
     /// conn.send(b"hello")?;
     /// let response = conn.recv().await?;
     /// ```
-    pub async fn connect_to(
+    pub async fn connect_udp(
         &self,
         peer_node_number: i32,
     ) -> Result<crate::p2p::UdpConnection, crate::p2p::P2pError> {
@@ -734,6 +735,88 @@ impl<S: NodeStateStore> ActivatedNode<S> {
             ice_caller,
             shared_secret,
         )
+    }
+
+    /// Connect to a peer node using QUIC transport.
+    ///
+    /// This establishes a P2P connection to the specified peer using ICE for
+    /// NAT traversal, then performs a QUIC handshake with TLS-PSK derived from
+    /// the X25519 key exchange. QUIC provides reliable, ordered streams.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let conn = activated.connect_quic(42).await?;
+    /// let stream = conn.open_stream().await?;
+    /// stream.write_all(b"hello").await?;
+    /// let mut buf = [0u8; 1024];
+    /// let n = stream.read(&mut buf).await?;
+    /// ```
+    pub async fn connect_quic(
+        &self,
+        peer_node_number: i32,
+    ) -> Result<crate::p2p::QuicConnection, crate::p2p::P2pError> {
+        use crate::hub::HubClient;
+        use crate::ice::IceCaller;
+        use crate::p2p::{QuicConnection, P2pError};
+
+        let hub_addr = self.config.read().unwrap().hub_addr.clone();
+
+        // Connect to hub
+        let mut client = HubClient::connect(&hub_addr).await?;
+
+        // Get STUN/TURN configuration
+        let stun_turn_config = client
+            .get_stun_turn_config(&self.registration)
+            .await?;
+
+        // Create ICE caller and gather candidates
+        let ice_caller = IceCaller::new(&stun_turn_config)?;
+        let caller_sdp = ice_caller.local_description().to_string();
+
+        // Build the StartConnectionRequest
+        // Sign: answerer_node_number || caller_x25519_public_key || caller_sdp
+        let mut message_to_sign = Vec::new();
+        message_to_sign.extend_from_slice(&peer_node_number.to_le_bytes());
+        message_to_sign.extend_from_slice(&self.x25519_key.public_key());
+        message_to_sign.extend_from_slice(caller_sdp.as_bytes());
+        let signature = self.signing_key.sign(&message_to_sign);
+
+        let request = proto::StartConnectionRequest {
+            answerer_node_number: peer_node_number,
+            caller_x25519_public_key: self.x25519_key.public_key().to_vec(),
+            caller_sdp,
+            signature,
+            stun_turn_config: Some(stun_turn_config),
+            transport: proto::Transport::Stream.into(),
+        };
+
+        // Send to hub, which forwards to the answerer
+        let response = client
+            .start_connection(&self.registration, request)
+            .await?;
+
+        // TODO: Verify answerer's signature against roster
+
+        // Extract peer's X25519 public key
+        let peer_x25519_public: [u8; 32] = response
+            .answerer_x25519_public_key
+            .try_into()
+            .map_err(|_| P2pError::SignatureVerificationFailed)?;
+
+        // Derive shared secret
+        let shared_secret = self.x25519_key.diffie_hellman(&peer_x25519_public);
+
+        // Complete ICE connection with answerer's SDP
+        ice_caller.connect(&response.answerer_sdp).await?;
+
+        // Complete QUIC handshake
+        QuicConnection::connect_caller(
+            peer_node_number,
+            response.connection_id,
+            ice_caller,
+            shared_secret,
+        )
+        .await
     }
 
 }
