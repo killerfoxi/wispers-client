@@ -436,10 +436,10 @@ async fn logout(hub_override: Option<&str>) -> Result<()> {
 async fn serve(hub_override: Option<&str>) -> Result<()> {
     use std::sync::Arc;
     use tokio::sync::RwLock;
-    use wispers_connect::p2p::DatagramConnectionAnswerer;
+    use wispers_connect::p2p::UdpConnectionAnswerer;
     use wispers_connect::{ServingHandle, ServingSession};
 
-    type IncomingRx = Option<tokio::sync::mpsc::Receiver<DatagramConnectionAnswerer>>;
+    type IncomingRx = Option<tokio::sync::mpsc::Receiver<UdpConnectionAnswerer>>;
 
     let storage = get_storage(hub_override)?;
     let stage = storage
@@ -579,7 +579,7 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
 }
 
 /// Handle an incoming P2P connection (respond to pings).
-async fn handle_p2p_connection(conn: wispers_connect::p2p::DatagramConnectionAnswerer) {
+async fn handle_p2p_connection(conn: wispers_connect::p2p::UdpConnectionAnswerer) {
     let peer = conn.peer_node_number;
 
     // Complete ICE negotiation

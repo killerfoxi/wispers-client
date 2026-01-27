@@ -3,15 +3,15 @@
 //! This module provides the types for establishing and managing P2P connections
 //! between activated nodes. Two transport types are supported:
 //!
-//! - **Datagram**: Raw UDP with AES-GCM encryption. Low overhead, unreliable delivery.
-//! - **Stream**: QUIC streams with TLS-PSK. Reliable, ordered delivery with flow control.
+//! - **UDP** ([`UdpConnection`]): Raw UDP with AES-GCM encryption. Low overhead, unreliable delivery.
+//! - **QUIC** ([`QuicConnection`]): QUIC streams with TLS-PSK. Reliable, ordered delivery with flow control.
 
 use thiserror::Error;
 
 use crate::encryption::{EncryptionError, P2pCipher};
 use crate::ice::{IceAnswerer, IceCaller, IceError};
 use crate::juice::State as IceState;
-use crate::quic::{self, QuicConnection, QuicError, QuicStream};
+use crate::quic::{self, QuicError};
 
 /// Connection state for a P2P connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +79,7 @@ pub enum P2pError {
 ///
 /// This provides encrypted UDP communication with a peer node after
 /// successful ICE negotiation.
-pub struct DatagramConnection {
+pub struct UdpConnection {
     /// The peer's node number.
     pub peer_node_number: i32,
 
@@ -93,7 +93,7 @@ pub struct DatagramConnection {
     cipher: P2pCipher,
 }
 
-impl DatagramConnection {
+impl UdpConnection {
     /// Create a new P2P connection (internal use).
     pub(crate) fn new(
         peer_node_number: i32,
@@ -151,7 +151,7 @@ impl DatagramConnection {
 }
 
 /// A peer-to-peer connection to another node (answerer side).
-pub struct DatagramConnectionAnswerer {
+pub struct UdpConnectionAnswerer {
     /// The peer's node number (the caller).
     pub peer_node_number: i32,
 
@@ -165,7 +165,7 @@ pub struct DatagramConnectionAnswerer {
     cipher: P2pCipher,
 }
 
-impl DatagramConnectionAnswerer {
+impl UdpConnectionAnswerer {
     /// Create a new P2P connection answerer (internal use).
     pub(crate) fn new(
         peer_node_number: i32,
@@ -226,76 +226,208 @@ impl DatagramConnectionAnswerer {
     }
 }
 
-//-- Stream connections (QUIC) ---------------------------------------------------------------------
+//-- QUIC connections ------------------------------------------------------------------------------
 
-/// A stream-based P2P connection to another node (caller side).
+/// Internal enum to hold either caller or answerer QUIC connection.
+enum QuicConnectionInner {
+    Caller(quic::Connection<IceCaller>),
+    Answerer(quic::Connection<IceAnswerer>),
+}
+
+/// Internal enum to hold either caller or answerer QUIC stream.
+enum QuicStreamInner {
+    Caller(quic::Stream<IceCaller>),
+    Answerer(quic::Stream<IceAnswerer>),
+}
+
+/// A QUIC stream for reading and writing data.
+///
+/// Streams provide ordered, reliable byte delivery within a QUIC connection.
+pub struct QuicStream {
+    inner: QuicStreamInner,
+}
+
+impl QuicStream {
+    /// Get the stream ID.
+    pub fn id(&self) -> u64 {
+        match &self.inner {
+            QuicStreamInner::Caller(s) => s.id(),
+            QuicStreamInner::Answerer(s) => s.id(),
+        }
+    }
+
+    /// Write data to the stream.
+    ///
+    /// Returns the number of bytes written.
+    pub async fn write(&self, data: &[u8]) -> Result<usize, P2pError> {
+        match &self.inner {
+            QuicStreamInner::Caller(s) => Ok(s.write(data).await?),
+            QuicStreamInner::Answerer(s) => Ok(s.write(data).await?),
+        }
+    }
+
+    /// Write all data to the stream.
+    pub async fn write_all(&self, data: &[u8]) -> Result<(), P2pError> {
+        match &self.inner {
+            QuicStreamInner::Caller(s) => Ok(s.write_all(data).await?),
+            QuicStreamInner::Answerer(s) => Ok(s.write_all(data).await?),
+        }
+    }
+
+    /// Read data from the stream.
+    ///
+    /// Returns the number of bytes read. Returns 0 if the stream is finished.
+    pub async fn read(&self, buf: &mut [u8]) -> Result<usize, P2pError> {
+        match &self.inner {
+            QuicStreamInner::Caller(s) => Ok(s.read(buf).await?),
+            QuicStreamInner::Answerer(s) => Ok(s.read(buf).await?),
+        }
+    }
+
+    /// Close the stream for writing (send FIN).
+    pub async fn finish(&self) -> Result<(), P2pError> {
+        match &self.inner {
+            QuicStreamInner::Caller(s) => Ok(s.finish().await?),
+            QuicStreamInner::Answerer(s) => Ok(s.finish().await?),
+        }
+    }
+
+    /// Shutdown the stream (stop sending and receiving).
+    pub async fn shutdown(&self) -> Result<(), P2pError> {
+        match &self.inner {
+            QuicStreamInner::Caller(s) => Ok(s.shutdown().await?),
+            QuicStreamInner::Answerer(s) => Ok(s.shutdown().await?),
+        }
+    }
+}
+
+/// A QUIC-based P2P connection to another node.
 ///
 /// This provides QUIC streams for reliable, ordered communication with a peer
-/// node. Unlike `DatagramConnection`, streams provide flow control and
+/// node. Unlike `UdpConnection`, streams provide flow control and
 /// automatic retransmission.
-pub struct StreamConnection {
+///
+/// Works for both caller (initiator) and answerer (responder) roles.
+pub struct QuicConnection {
     /// The peer's node number.
     pub peer_node_number: i32,
 
-    /// Connection ID assigned by the answerer.
+    /// Connection ID for this connection.
     pub connection_id: i64,
 
     /// The underlying QUIC connection.
-    quic: QuicConnection<IceCaller>,
+    inner: QuicConnectionInner,
 }
 
-impl StreamConnection {
-    /// Create and establish a new stream connection (internal use).
+impl QuicConnection {
+    /// Create and establish a new QUIC connection as the caller (internal use).
     ///
     /// This creates the QUIC connection and performs the handshake.
     /// Returns a fully-established connection ready for stream operations.
-    pub(crate) async fn connect(
+    pub(crate) async fn connect_caller(
         peer_node_number: i32,
         connection_id: i64,
         ice: IceCaller,
         shared_secret: [u8; 32],
     ) -> Result<Self, P2pError> {
         let psk = quic::derive_psk(&shared_secret);
-        let quic = QuicConnection::new_caller(ice, psk, connection_id)?;
+        let quic = quic::Connection::new_caller(ice, psk, connection_id)?;
         quic.handshake().await?;
         Ok(Self {
             peer_node_number,
             connection_id,
-            quic,
+            inner: QuicConnectionInner::Caller(quic),
+        })
+    }
+
+    /// Create and establish a new QUIC connection as the answerer (internal use).
+    ///
+    /// This waits for ICE to connect, then performs the QUIC handshake.
+    /// Returns a fully-established connection ready for stream operations.
+    pub(crate) async fn connect_answerer(
+        peer_node_number: i32,
+        connection_id: i64,
+        ice: IceAnswerer,
+        shared_secret: [u8; 32],
+    ) -> Result<Self, P2pError> {
+        // Wait for ICE connection
+        ice.connect().await?;
+
+        // Create QUIC connection and handshake
+        let psk = quic::derive_psk(&shared_secret);
+        let quic = quic::Connection::new_answerer(ice, psk, connection_id)?;
+        quic.handshake().await?;
+
+        Ok(Self {
+            peer_node_number,
+            connection_id,
+            inner: QuicConnectionInner::Answerer(quic),
         })
     }
 
     /// Open a new bidirectional stream.
     ///
     /// Returns a stream that can be used for reading and writing data.
-    pub async fn open_stream(&self) -> Result<QuicStream<IceCaller>, P2pError> {
-        Ok(self.quic.open_stream().await?)
+    pub async fn open_stream(&self) -> Result<QuicStream, P2pError> {
+        match &self.inner {
+            QuicConnectionInner::Caller(quic) => {
+                let stream = quic.open_stream().await?;
+                Ok(QuicStream {
+                    inner: QuicStreamInner::Caller(stream),
+                })
+            }
+            QuicConnectionInner::Answerer(quic) => {
+                let stream = quic.open_stream().await?;
+                Ok(QuicStream {
+                    inner: QuicStreamInner::Answerer(stream),
+                })
+            }
+        }
     }
 
     /// Accept an incoming stream from the peer.
     ///
     /// Waits for the peer to open a new stream and returns it.
-    pub async fn accept_stream(&self) -> Result<QuicStream<IceCaller>, P2pError> {
-        Ok(self.quic.accept_stream().await?)
+    pub async fn accept_stream(&self) -> Result<QuicStream, P2pError> {
+        match &self.inner {
+            QuicConnectionInner::Caller(quic) => {
+                let stream = quic.accept_stream().await?;
+                Ok(QuicStream {
+                    inner: QuicStreamInner::Caller(stream),
+                })
+            }
+            QuicConnectionInner::Answerer(quic) => {
+                let stream = quic.accept_stream().await?;
+                Ok(QuicStream {
+                    inner: QuicStreamInner::Answerer(stream),
+                })
+            }
+        }
     }
 
     /// Check if the QUIC connection is established.
     pub async fn is_established(&self) -> bool {
-        self.quic.is_established().await
+        match &self.inner {
+            QuicConnectionInner::Caller(quic) => quic.is_established().await,
+            QuicConnectionInner::Answerer(quic) => quic.is_established().await,
+        }
     }
 
     /// Close the connection.
     pub async fn close(self) -> Result<(), P2pError> {
-        self.quic.close().await?;
+        match self.inner {
+            QuicConnectionInner::Caller(quic) => quic.close().await?,
+            QuicConnectionInner::Answerer(quic) => quic.close().await?,
+        }
         Ok(())
     }
 }
 
-/// A stream-based P2P connection answerer (answerer/server side).
+/// A pending QUIC connection (answerer side, pre-handshake).
 ///
-/// This is created when an incoming connection requests stream transport.
+/// This is created when an incoming connection requests QUIC transport.
 /// Call `connect()` to complete the ICE and QUIC handshakes.
-pub struct StreamConnectionAnswerer {
+pub struct QuicConnectionPending {
     /// The peer's node number (the caller).
     pub peer_node_number: i32,
 
@@ -305,12 +437,12 @@ pub struct StreamConnectionAnswerer {
     /// The underlying ICE connection (not yet fully connected).
     ice: IceAnswerer,
 
-    /// Pre-computed PSK for QUIC handshake.
-    psk: [u8; 32],
+    /// Shared secret for PSK derivation.
+    shared_secret: [u8; 32],
 }
 
-impl StreamConnectionAnswerer {
-    /// Create a new stream connection answerer (internal use).
+impl QuicConnectionPending {
+    /// Create a new pending QUIC connection (internal use).
     ///
     /// The ICE answerer should already have the remote SDP set.
     /// Call `connect()` to complete the connection.
@@ -320,12 +452,11 @@ impl StreamConnectionAnswerer {
         ice: IceAnswerer,
         shared_secret: [u8; 32],
     ) -> Self {
-        let psk = quic::derive_psk(&shared_secret);
         Self {
             peer_node_number,
             connection_id,
             ice,
-            psk,
+            shared_secret,
         }
     }
 
@@ -333,61 +464,14 @@ impl StreamConnectionAnswerer {
     ///
     /// This waits for ICE to connect, then performs the QUIC handshake.
     /// Returns a fully-established connection ready for stream operations.
-    pub async fn connect(self) -> Result<StreamConnectionAnswered, P2pError> {
-        // Wait for ICE connection
-        self.ice.connect().await?;
-
-        // Create QUIC connection and handshake
-        let quic = QuicConnection::new_answerer(self.ice, self.psk, self.connection_id)?;
-        quic.handshake().await?;
-
-        Ok(StreamConnectionAnswered {
-            peer_node_number: self.peer_node_number,
-            connection_id: self.connection_id,
-            quic,
-        })
-    }
-}
-
-/// A fully-established stream connection (answerer/server side).
-///
-/// This is returned by `StreamConnectionAnswerer::connect()` after the
-/// ICE and QUIC handshakes complete.
-pub struct StreamConnectionAnswered {
-    /// The peer's node number (the caller).
-    pub peer_node_number: i32,
-
-    /// Connection ID we assigned.
-    pub connection_id: i64,
-
-    /// The underlying QUIC connection.
-    quic: QuicConnection<IceAnswerer>,
-}
-
-impl StreamConnectionAnswered {
-    /// Open a new bidirectional stream.
-    ///
-    /// Returns a stream that can be used for reading and writing data.
-    pub async fn open_stream(&self) -> Result<QuicStream<IceAnswerer>, P2pError> {
-        Ok(self.quic.open_stream().await?)
-    }
-
-    /// Accept an incoming stream from the peer.
-    ///
-    /// Waits for the peer to open a new stream and returns it.
-    pub async fn accept_stream(&self) -> Result<QuicStream<IceAnswerer>, P2pError> {
-        Ok(self.quic.accept_stream().await?)
-    }
-
-    /// Check if the QUIC connection is established.
-    pub async fn is_established(&self) -> bool {
-        self.quic.is_established().await
-    }
-
-    /// Close the connection.
-    pub async fn close(self) -> Result<(), P2pError> {
-        self.quic.close().await?;
-        Ok(())
+    pub async fn connect(self) -> Result<QuicConnection, P2pError> {
+        QuicConnection::connect_answerer(
+            self.peer_node_number,
+            self.connection_id,
+            self.ice,
+            self.shared_secret,
+        )
+        .await
     }
 }
 

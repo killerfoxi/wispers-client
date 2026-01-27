@@ -10,7 +10,7 @@ use crate::crypto::{generate_nonce, PairingCode, PairingSecret, SigningKeyPair, 
 use crate::hub::proto;
 use crate::hub::ServingConnection;
 use crate::ice::IceAnswerer;
-use crate::p2p::DatagramConnectionAnswerer;
+use crate::p2p::UdpConnectionAnswerer;
 use crate::types::ConnectivityGroupId;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -130,7 +130,7 @@ pub struct ServingSession {
     pending_endorsement: Option<PendingEndorsement>,
     // P2P state (only for activated nodes)
     p2p_config: Option<P2pConfig>,
-    incoming_conn_tx: Option<mpsc::Sender<DatagramConnectionAnswerer>>,
+    incoming_conn_tx: Option<mpsc::Sender<UdpConnectionAnswerer>>,
     connection_id_counter: AtomicI64,
 }
 
@@ -145,7 +145,7 @@ impl ServingSession {
         connectivity_group_id: ConnectivityGroupId,
         node_number: i32,
         p2p_config: Option<P2pConfig>,
-    ) -> (ServingHandle, Self, Option<mpsc::Receiver<DatagramConnectionAnswerer>>) {
+    ) -> (ServingHandle, Self, Option<mpsc::Receiver<UdpConnectionAnswerer>>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
 
         // Create incoming connection channel if P2P is enabled
@@ -656,8 +656,8 @@ impl ServingSession {
 
         println!("  Sent StartConnectionResponse, connection_id={}", connection_id);
 
-        // Create the DatagramConnectionAnswerer
-        let p2p_conn = match DatagramConnectionAnswerer::new(
+        // Create the UdpConnectionAnswerer
+        let p2p_conn = match UdpConnectionAnswerer::new(
             caller_node_number,
             connection_id,
             ice_answerer,
@@ -665,7 +665,7 @@ impl ServingSession {
         ) {
             Ok(conn) => conn,
             Err(e) => {
-                eprintln!("  Failed to create DatagramConnectionAnswerer: {}", e);
+                eprintln!("  Failed to create UdpConnectionAnswerer: {}", e);
                 return;
             }
         };

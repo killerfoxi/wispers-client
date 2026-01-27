@@ -21,7 +21,7 @@ pub use roster::{
     create_bootstrap_roster, create_revocation_roster, verify_roster, RosterVerificationError,
 };
 pub use ice::{IceAnswerer, IceCaller, IceError};
-pub use p2p::{ConnectionState, DatagramConnection, DatagramConnectionAnswerer, P2pError, StreamConnection, StreamConnectionAnswerer, StreamConnectionAnswered, StunTurnConfig};
+pub use p2p::{ConnectionState, UdpConnection, UdpConnectionAnswerer, P2pError, QuicConnection, QuicConnectionPending, QuicStream, StunTurnConfig};
 pub use serving::{EndorsingStatus, P2pConfig, ServingError, ServingHandle, ServingSession, StatusInfo};
 pub use state::{ActivatedNode, NodeStateStage, NodeStorage, PendingNodeState, RegisteredNodeState};
 pub use storage::{FileNodeStateStore, InMemoryNodeStateStore, NodeStateStore};

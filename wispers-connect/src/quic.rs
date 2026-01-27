@@ -185,8 +185,8 @@ pub enum QuicState {
     Closed,
 }
 
-/// Shared state between QuicConnection and the background driver.
-struct QuicConnectionInner<T> {
+/// Shared state between Connection and the background driver.
+struct ConnectionInner<T> {
     /// The quiche connection.
     conn: Mutex<Pin<Box<quiche::Connection>>>,
     /// ICE transport for sending/receiving packets.
@@ -199,7 +199,7 @@ struct QuicConnectionInner<T> {
     shutdown: AtomicBool,
 }
 
-impl<T: IceTransport> QuicConnectionInner<T> {
+impl<T: IceTransport> ConnectionInner<T> {
     /// Send all pending QUIC packets over the ICE transport.
     async fn flush_send(&self) -> Result<(), QuicError> {
         let mut buf = vec![0u8; MAX_DATAGRAM_SIZE];
@@ -259,12 +259,12 @@ impl<T: IceTransport> QuicConnectionInner<T> {
 /// This wraps a quiche connection and runs a background driver task that
 /// handles packet I/O and timeouts. The driver keeps the connection alive
 /// even when the application is not actively reading or writing.
-pub struct QuicConnection<T: IceTransport + 'static> {
-    inner: Arc<QuicConnectionInner<T>>,
+pub struct Connection<T: IceTransport + 'static> {
+    inner: Arc<ConnectionInner<T>>,
     driver_handle: tokio::task::JoinHandle<()>,
 }
 
-impl<T: IceTransport + 'static> QuicConnection<T> {
+impl<T: IceTransport + 'static> Connection<T> {
     /// Create a new QUIC connection and start the background driver.
     ///
     /// The ICE connection must already be established before calling this.
@@ -286,7 +286,7 @@ impl<T: IceTransport + 'static> QuicConnection<T> {
             QuicRole::Server => quiche::accept(&scid, None, local, peer, &mut config)?,
         };
 
-        let inner = Arc::new(QuicConnectionInner {
+        let inner = Arc::new(ConnectionInner {
             conn: Mutex::new(Box::pin(conn)),
             transport,
             role,
@@ -363,7 +363,7 @@ impl<T: IceTransport + 'static> QuicConnection<T> {
     ///
     /// Returns a stream that can be used for reading and writing.
     /// Both client and server can open streams (they use different ID ranges).
-    pub async fn open_stream(&self) -> Result<QuicStream<T>, QuicError> {
+    pub async fn open_stream(&self) -> Result<Stream<T>, QuicError> {
         // Stream ID assignment:
         // - Client-initiated bidi: 0, 4, 8, ... (id % 4 == 0)
         // - Server-initiated bidi: 1, 5, 9, ... (id % 4 == 1)
@@ -398,7 +398,7 @@ impl<T: IceTransport + 'static> QuicConnection<T> {
         // Flush to notify the peer
         self.inner.flush_send().await?;
 
-        Ok(QuicStream {
+        Ok(Stream {
             inner: Arc::clone(&self.inner),
             stream_id,
         })
@@ -408,13 +408,13 @@ impl<T: IceTransport + 'static> QuicConnection<T> {
     ///
     /// Waits for the peer to open a new stream and returns it.
     /// Either side can accept streams opened by the other.
-    pub async fn accept_stream(&self) -> Result<QuicStream<T>, QuicError> {
+    pub async fn accept_stream(&self) -> Result<Stream<T>, QuicError> {
         loop {
             // Check for readable streams (peer has opened and sent data)
             {
                 let mut conn = self.inner.conn.lock().await;
                 if let Some(stream_id) = conn.stream_readable_next() {
-                    return Ok(QuicStream {
+                    return Ok(Stream {
                         inner: Arc::clone(&self.inner),
                         stream_id,
                     });
@@ -431,7 +431,7 @@ impl<T: IceTransport + 'static> QuicConnection<T> {
     }
 }
 
-impl<T: IceTransport + 'static> Drop for QuicConnection<T> {
+impl<T: IceTransport + 'static> Drop for Connection<T> {
     fn drop(&mut self) {
         self.inner.shutdown.store(true, Ordering::SeqCst);
         self.driver_handle.abort();
@@ -439,7 +439,7 @@ impl<T: IceTransport + 'static> Drop for QuicConnection<T> {
 }
 
 /// Background driver loop that keeps the QUIC connection alive.
-async fn driver_loop<T: IceTransport>(inner: Arc<QuicConnectionInner<T>>) {
+async fn driver_loop<T: IceTransport>(inner: Arc<ConnectionInner<T>>) {
     loop {
         // Check if we should stop
         if inner.shutdown.load(Ordering::SeqCst) {
@@ -507,12 +507,12 @@ async fn driver_loop<T: IceTransport>(inner: Arc<QuicConnectionInner<T>>) {
 /// Streams provide ordered, reliable byte delivery within a QUIC connection.
 /// The background driver handles packet I/O, so stream operations can block
 /// without stalling the connection.
-pub struct QuicStream<T: IceTransport + 'static> {
-    inner: Arc<QuicConnectionInner<T>>,
+pub struct Stream<T: IceTransport + 'static> {
+    inner: Arc<ConnectionInner<T>>,
     stream_id: u64,
 }
 
-impl<T: IceTransport + 'static> QuicStream<T> {
+impl<T: IceTransport + 'static> Stream<T> {
     /// Get the stream ID.
     pub fn id(&self) -> u64 {
         self.stream_id
@@ -658,7 +658,7 @@ fn conn_id_from_i64(id: i64) -> quiche::ConnectionId<'static> {
 
 // Convenience constructors for specific ICE transport types
 
-impl QuicConnection<IceCaller> {
+impl Connection<IceCaller> {
     /// Create a QUIC connection as the caller (client role).
     ///
     /// The `connection_id` should be from the `StartConnectionResponse`.
@@ -673,7 +673,7 @@ impl QuicConnection<IceCaller> {
     }
 }
 
-impl QuicConnection<IceAnswerer> {
+impl Connection<IceAnswerer> {
     /// Create a QUIC connection as the answerer (server role).
     ///
     /// The `connection_id` is the one generated for `StartConnectionResponse`.

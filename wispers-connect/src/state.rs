@@ -379,7 +379,7 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
         (
             crate::serving::ServingHandle,
             crate::serving::ServingSession,
-            Option<tokio::sync::mpsc::Receiver<crate::p2p::DatagramConnectionAnswerer>>,
+            Option<tokio::sync::mpsc::Receiver<crate::p2p::UdpConnectionAnswerer>>,
         ),
         NodeStateError<S::Error>,
     > {
@@ -628,7 +628,7 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         (
             crate::serving::ServingHandle,
             crate::serving::ServingSession,
-            Option<tokio::sync::mpsc::Receiver<crate::p2p::DatagramConnectionAnswerer>>,
+            Option<tokio::sync::mpsc::Receiver<crate::p2p::UdpConnectionAnswerer>>,
         ),
         NodeStateError<S::Error>,
     > {
@@ -672,10 +672,10 @@ impl<S: NodeStateStore> ActivatedNode<S> {
     pub async fn connect_to(
         &self,
         peer_node_number: i32,
-    ) -> Result<crate::p2p::DatagramConnection, crate::p2p::P2pError> {
+    ) -> Result<crate::p2p::UdpConnection, crate::p2p::P2pError> {
         use crate::hub::HubClient;
         use crate::ice::IceCaller;
-        use crate::p2p::{DatagramConnection, P2pError};
+        use crate::p2p::{UdpConnection, P2pError};
 
         let hub_addr = self.config.read().unwrap().hub_addr.clone();
 
@@ -727,7 +727,7 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         // Complete ICE connection with answerer's SDP
         ice_caller.connect(&response.answerer_sdp).await?;
 
-        DatagramConnection::new(
+        UdpConnection::new(
             peer_node_number,
             response.connection_id,
             ice_caller,
@@ -772,7 +772,7 @@ async fn start_serving_impl(
     (
         crate::serving::ServingHandle,
         crate::serving::ServingSession,
-        Option<tokio::sync::mpsc::Receiver<crate::p2p::DatagramConnectionAnswerer>>,
+        Option<tokio::sync::mpsc::Receiver<crate::p2p::UdpConnectionAnswerer>>,
     ),
     crate::hub::HubError,
 > {
