@@ -193,6 +193,10 @@ struct ConnectionInner<T> {
     transport: T,
     /// Our role (client or server).
     role: QuicRole,
+    /// Local address (for recv_info).
+    local_addr: SocketAddr,
+    /// Peer address (for recv_info).
+    peer_addr: SocketAddr,
     /// Notified when connection state changes (data available, established, etc.).
     state_notify: Notify,
     /// Set to true to signal the driver to stop.
@@ -224,9 +228,10 @@ impl<T: IceTransport> ConnectionInner<T> {
     /// Process one incoming packet.
     async fn process_packet(&self, mut packet: Vec<u8>) -> Result<(), QuicError> {
         let mut conn = self.conn.lock().await;
+        // recv_info: from=peer (who sent), to=local (who received)
         let recv_info = quiche::RecvInfo {
-            from: "127.0.0.1:0".parse().unwrap(),
-            to: "127.0.0.1:0".parse().unwrap(),
+            from: self.peer_addr,
+            to: self.local_addr,
         };
         match conn.recv(&mut packet, recv_info) {
             Ok(_) => Ok(()),
@@ -290,6 +295,8 @@ impl<T: IceTransport + 'static> Connection<T> {
             conn: Mutex::new(Box::pin(conn)),
             transport,
             role,
+            local_addr: local,
+            peer_addr: peer,
             state_notify: Notify::new(),
             shutdown: AtomicBool::new(false),
         });
