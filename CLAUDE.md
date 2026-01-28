@@ -15,6 +15,8 @@
 | Hub communication | `wispers-connect/src/hub.rs`, `proto/hub.proto` |
 | Serving/endorsing | `wispers-connect/src/serving.rs` |
 | Activation flow | `wispers-connect/src/activation.rs` |
+| P2P connections | `wispers-connect/src/p2p.rs`, `wispers-connect/src/quic.rs` |
+| ICE/NAT traversal | `wispers-connect/src/ice.rs`, `wispers-connect/src/juice.rs` |
 | CLI commands | `wconnect/src/main.rs` |
 | Daemon mode | `wconnect/src/daemon.rs` |
 | Roster crypto | `wispers-connect/src/roster.rs`, `proto/roster.proto` |

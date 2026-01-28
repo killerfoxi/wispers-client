@@ -269,3 +269,51 @@ From `proto/hub.proto`:
 1. Edit `proto/*.proto`
 2. Regenerate: `cd proto && ./gen.sh` (generates Rust and Go)
 3. Update both client (Rust) and hub (Go) code
+
+## P2P Transport Architecture
+
+Activated nodes can establish peer-to-peer connections using two transport types:
+
+```
+┌─────────────────────────────────────────┐
+│            Application                  │
+├───────────────────┬─────────────────────┤
+│   UdpConnection   │   QuicConnection    │
+│  (raw UDP + AES)  │  (QUIC streams)     │
+├───────────────────┴─────────────────────┤
+│        IceCaller / IceAnswerer          │
+│            (libjuice FFI)               │
+├─────────────────────────────────────────┤
+│             UDP Socket                  │
+└─────────────────────────────────────────┘
+```
+
+### Transport Types
+
+| Type | Use Case | Properties |
+|------|----------|------------|
+| `UdpConnection` | Low-latency, fire-and-forget | AES-GCM encryption, unreliable delivery |
+| `QuicConnection` | Reliable data transfer | TLS 1.3 PSK, ordered streams, flow control |
+
+### Key Files
+
+- `p2p.rs` - Public API: `UdpConnection`, `QuicConnection`, `QuicStream`
+- `quic.rs` - QUIC implementation using quiche with TLS-PSK authentication
+- `ice.rs` - ICE negotiation wrapper around libjuice
+- `juice.rs` - Low-level FFI bindings to libjuice C library
+
+### QUIC Authentication
+
+QUIC uses TLS 1.3 Pre-Shared Key (PSK) mode, not certificates:
+- PSK derived from X25519 DH exchange (same keys used for UDP encryption)
+- Server generates ephemeral in-memory cert (BoringSSL requirement for PSK)
+- No certificate verification needed - authentication is via the shared PSK
+
+### Connection Flow
+
+1. Caller requests `StunTurnConfig` from hub
+2. Both sides gather ICE candidates via libjuice
+3. Caller sends `StartConnectionRequest` (includes transport type, X25519 pubkey)
+4. Answerer verifies signature, responds with own X25519 pubkey
+5. ICE negotiation establishes UDP path
+6. For QUIC: PSK handshake over ICE transport, then streams available
