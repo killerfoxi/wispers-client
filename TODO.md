@@ -82,14 +82,13 @@ curl http://localhost:8080
 - [x] Each incoming TCP connection gets its own QUIC stream
 
 ### 3.2 Error handling
-- [ ] Connection refused on remote
-- [ ] Node not serving
-- [ ] QUIC connection failure
-- [ ] Timeout configuration
+- [x] Connection refused on remote (server sends ERROR, client reports)
+- [x] Node not serving (connect_quic fails)
+- [x] QUIC connection failure (handled with context)
+- [ ] Timeout configuration (skipped for PoC)
 
-### 3.3 Logging/status
-- [ ] Log connections (optional verbose mode)
-- [ ] Show active forwards in `wconnect status`?
+### 3.3 Logging
+- [x] Log connection count on exit (Ctrl+C summary)
 
 ---
 

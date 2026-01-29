@@ -1025,25 +1025,36 @@ async fn forward(
         .context("failed to connect to target node")?;
 
     println!(" connected");
+    println!("Press Ctrl+C to stop");
 
     let quic_conn = std::sync::Arc::new(quic_conn);
+    let connection_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-    // Accept incoming connections
+    // Accept incoming connections until Ctrl+C
     loop {
-        let (tcp_stream, peer_addr) = listener
-            .accept()
-            .await
-            .context("failed to accept connection")?;
+        tokio::select! {
+            result = listener.accept() => {
+                let (tcp_stream, peer_addr) = result.context("failed to accept connection")?;
 
-        println!("Accepted connection from {}", peer_addr);
+                let count = connection_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                println!("[{}] Accepted connection from {}", count, peer_addr);
 
-        let quic_conn = std::sync::Arc::clone(&quic_conn);
-        tokio::spawn(async move {
-            if let Err(e) = handle_forward_connection(tcp_stream, quic_conn, remote_port).await {
-                eprintln!("Forward error for {}: {}", peer_addr, e);
+                let quic_conn = std::sync::Arc::clone(&quic_conn);
+                tokio::spawn(async move {
+                    if let Err(e) = handle_forward_connection(tcp_stream, quic_conn, remote_port).await {
+                        eprintln!("[{}] Forward error: {}", count, e);
+                    }
+                });
             }
-        });
+            _ = tokio::signal::ctrl_c() => {
+                let total = connection_count.load(std::sync::atomic::Ordering::Relaxed);
+                println!("\nStopping. Total connections forwarded: {}", total);
+                break;
+            }
+        }
     }
+
+    Ok(())
 }
 
 /// Handle a single forwarded TCP connection.
