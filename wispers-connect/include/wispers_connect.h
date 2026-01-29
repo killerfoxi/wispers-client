@@ -28,20 +28,18 @@ typedef struct WispersPendingNodeStateHandle WispersPendingNodeStateHandle;
 typedef struct WispersRegisteredNodeStateHandle WispersRegisteredNodeStateHandle;
 
 // Host-provided storage callbacks. All functions must be non-null when used.
+// The ctx pointer carries all context the host needs, including any namespace
+// or isolation information. The library does not manage namespacing.
 typedef struct {
     void *ctx;
-    WispersStatus (*load_root_key)(void *ctx, const char *app_namespace, const char *profile_namespace,
-                                   uint8_t *out_key, size_t out_key_len);
-    WispersStatus (*save_root_key)(void *ctx, const char *app_namespace, const char *profile_namespace,
-                                   const uint8_t *key, size_t key_len);
-    WispersStatus (*delete_root_key)(void *ctx, const char *app_namespace, const char *profile_namespace);
+    WispersStatus (*load_root_key)(void *ctx, uint8_t *out_key, size_t out_key_len);
+    WispersStatus (*save_root_key)(void *ctx, const uint8_t *key, size_t key_len);
+    WispersStatus (*delete_root_key)(void *ctx);
 
     // Registration payloads are serialized by Rust (currently using bincode).
-    WispersStatus (*load_registration)(void *ctx, const char *app_namespace, const char *profile_namespace,
-                                       uint8_t *buffer, size_t buffer_len, size_t *out_len);
-    WispersStatus (*save_registration)(void *ctx, const char *app_namespace, const char *profile_namespace,
-                                       const uint8_t *buffer, size_t buffer_len);
-    WispersStatus (*delete_registration)(void *ctx, const char *app_namespace, const char *profile_namespace);
+    WispersStatus (*load_registration)(void *ctx, uint8_t *buffer, size_t buffer_len, size_t *out_len);
+    WispersStatus (*save_registration)(void *ctx, const uint8_t *buffer, size_t buffer_len);
+    WispersStatus (*delete_registration)(void *ctx);
 } WispersNodeStateStoreCallbacks;
 
 // Manager lifecycle.
@@ -49,28 +47,22 @@ WispersNodeStorageHandle *wispers_storage_new_in_memory(void);
 WispersNodeStorageHandle *wispers_storage_new_with_callbacks(const WispersNodeStateStoreCallbacks *callbacks);
 void wispers_storage_free(WispersNodeStorageHandle *handle);
 
-// Restore or initialize node state. Exactly one of out_pending or out_registered will be set on success.
-WispersStatus wispers_storage_restore_or_init(
-    WispersNodeStorageHandle *handle,
-    const char *app_namespace,
-    const char *profile_namespace, // optional: pass NULL for default
-    WispersPendingNodeStateHandle **out_pending,
-    WispersRegisteredNodeStateHandle **out_registered
-);
+// TODO: wispers_storage_restore_or_init - requires async FFI with callbacks
 
 // Pending-state helpers.
 void wispers_pending_state_free(WispersPendingNodeStateHandle *handle);
-char *wispers_pending_state_registration_url(WispersPendingNodeStateHandle *handle, const char *base_url);
 WispersStatus wispers_pending_state_complete_registration(
     WispersPendingNodeStateHandle *handle,
     const char *connectivity_group_id,
-    const char *node_id,
+    int node_number,
+    const char *auth_token,
     WispersRegisteredNodeStateHandle **out_registered
 );
 
 // Registered-state helpers.
 void wispers_registered_state_free(WispersRegisteredNodeStateHandle *handle);
-WispersStatus wispers_registered_state_delete(WispersRegisteredNodeStateHandle *handle);
+
+// TODO: wispers_registered_state_logout - requires async FFI with callbacks
 
 // Utility to free strings allocated by the library.
 void wispers_string_free(char *ptr);

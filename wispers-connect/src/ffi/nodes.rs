@@ -1,13 +1,10 @@
 use super::handles::{
-    WispersPendingNodeStateHandle, WispersRegisteredNodeStateHandle,
-    complete_registration_internal, registration_url_internal,
+    WispersPendingNodeStateHandle, WispersRegisteredNodeStateHandle, complete_registration_internal,
 };
 use super::helpers::{c_str_to_string, reset_out_ptr};
 use crate::errors::WispersStatus;
 use crate::types::{AuthToken, ConnectivityGroupId, NodeRegistration};
-use std::ffi::CString;
 use std::os::raw::{c_char, c_int};
-use std::ptr;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wispers_pending_state_free(handle: *mut WispersPendingNodeStateHandle) {
@@ -26,27 +23,6 @@ pub extern "C" fn wispers_registered_state_free(handle: *mut WispersRegisteredNo
     }
     unsafe {
         drop(Box::from_raw(handle));
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wispers_pending_state_registration_url(
-    handle: *mut WispersPendingNodeStateHandle,
-    base_url: *const c_char,
-) -> *mut c_char {
-    if handle.is_null() || base_url.is_null() {
-        return ptr::null_mut();
-    }
-
-    let base = match c_str_to_string(base_url) {
-        Ok(value) => value,
-        Err(_) => return ptr::null_mut(),
-    };
-
-    let url = registration_url_internal(unsafe { &(*handle).0 }, &base);
-    match CString::new(url) {
-        Ok(cstr) => cstr.into_raw(),
-        Err(_) => ptr::null_mut(),
     }
 }
 

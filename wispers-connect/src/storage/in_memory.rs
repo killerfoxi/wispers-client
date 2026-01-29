@@ -1,13 +1,12 @@
 use crate::storage::NodeStateStore;
-use crate::types::{AppNamespace, NodeState, ProfileNamespace};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use crate::types::NodeState;
+use std::sync::RwLock;
 use thiserror::Error;
 
 /// Simple, non-persistent store useful for testing and sketches.
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct InMemoryNodeStateStore {
-    states: Arc<RwLock<HashMap<(AppNamespace, ProfileNamespace), NodeState>>>,
+    state: RwLock<Option<NodeState>>,
 }
 
 impl InMemoryNodeStateStore {
@@ -19,40 +18,20 @@ impl InMemoryNodeStateStore {
 impl NodeStateStore for InMemoryNodeStateStore {
     type Error = InMemoryStoreError;
 
-    fn load(
-        &self,
-        app_namespace: &AppNamespace,
-        profile_namespace: &ProfileNamespace,
-    ) -> Result<Option<NodeState>, Self::Error> {
-        let states = self
-            .states
-            .read()
-            .map_err(|_| InMemoryStoreError::Poisoned)?;
-        Ok(states
-            .get(&(app_namespace.clone(), profile_namespace.clone()))
-            .cloned())
+    fn load(&self) -> Result<Option<NodeState>, Self::Error> {
+        let state = self.state.read().map_err(|_| InMemoryStoreError::Poisoned)?;
+        Ok(state.clone())
     }
 
     fn save(&self, state: &NodeState) -> Result<(), Self::Error> {
-        let mut states = self
-            .states
-            .write()
-            .map_err(|_| InMemoryStoreError::Poisoned)?;
-        let key = (state.app_namespace.clone(), state.profile_namespace.clone());
-        states.insert(key, state.clone());
+        let mut stored = self.state.write().map_err(|_| InMemoryStoreError::Poisoned)?;
+        *stored = Some(state.clone());
         Ok(())
     }
 
-    fn delete(
-        &self,
-        app_namespace: &AppNamespace,
-        profile_namespace: &ProfileNamespace,
-    ) -> Result<(), Self::Error> {
-        let mut states = self
-            .states
-            .write()
-            .map_err(|_| InMemoryStoreError::Poisoned)?;
-        states.remove(&(app_namespace.clone(), profile_namespace.clone()));
+    fn delete(&self) -> Result<(), Self::Error> {
+        let mut stored = self.state.write().map_err(|_| InMemoryStoreError::Poisoned)?;
+        *stored = None;
         Ok(())
     }
 }

@@ -1,67 +1,38 @@
 use crate::errors::WispersStatus;
 use crate::storage::NodeStateStore;
-use crate::types::{AppNamespace, NodeRegistration, NodeState, ProfileNamespace, RootKey};
+use crate::types::{NodeRegistration, NodeState, RootKey};
 use bincode;
-use std::ffi::{CString, c_void};
+use std::ffi::c_void;
 use std::fmt;
 
 const INITIAL_REGISTRATION_BUFFER: usize = 256;
 
+/// Host-provided storage callbacks.
+///
+/// The `ctx` pointer carries all context the host needs, including any
+/// namespace or isolation information. The library does not manage namespacing.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WispersNodeStateStoreCallbacks {
     pub ctx: *mut c_void,
-    pub load_root_key: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const std::os::raw::c_char,
-            *const std::os::raw::c_char,
-            *mut u8,
-            usize,
-        ) -> WispersStatus,
-    >,
+    pub load_root_key:
+        Option<unsafe extern "C" fn(ctx: *mut c_void, out: *mut u8, len: usize) -> WispersStatus>,
     pub save_root_key: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const std::os::raw::c_char,
-            *const std::os::raw::c_char,
-            *const u8,
-            usize,
-        ) -> WispersStatus,
+        unsafe extern "C" fn(ctx: *mut c_void, key: *const u8, len: usize) -> WispersStatus,
     >,
-    pub delete_root_key: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const std::os::raw::c_char,
-            *const std::os::raw::c_char,
-        ) -> WispersStatus,
-    >,
+    pub delete_root_key: Option<unsafe extern "C" fn(ctx: *mut c_void) -> WispersStatus>,
     pub load_registration: Option<
         unsafe extern "C" fn(
-            *mut c_void,
-            *const std::os::raw::c_char,
-            *const std::os::raw::c_char,
-            *mut u8,
-            usize,
-            *mut usize,
+            ctx: *mut c_void,
+            buf: *mut u8,
+            len: usize,
+            out_len: *mut usize,
         ) -> WispersStatus,
     >,
     pub save_registration: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const std::os::raw::c_char,
-            *const std::os::raw::c_char,
-            *const u8,
-            usize,
-        ) -> WispersStatus,
+        unsafe extern "C" fn(ctx: *mut c_void, buf: *const u8, len: usize) -> WispersStatus,
     >,
-    pub delete_registration: Option<
-        unsafe extern "C" fn(
-            *mut c_void,
-            *const std::os::raw::c_char,
-            *const std::os::raw::c_char,
-        ) -> WispersStatus,
-    >,
+    pub delete_registration: Option<unsafe extern "C" fn(ctx: *mut c_void) -> WispersStatus>,
 }
 
 unsafe impl Send for WispersNodeStateStoreCallbacks {}
@@ -74,7 +45,6 @@ pub struct ForeignNodeStateStore {
 #[derive(Debug)]
 pub enum ForeignStoreError {
     MissingCallback(&'static str),
-    CStringConversion,
     RegistrationEncode,
     RegistrationDecode,
     Status(WispersStatus),
@@ -84,7 +54,6 @@ impl fmt::Display for ForeignStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ForeignStoreError::MissingCallback(name) => write!(f, "missing callback: {name}"),
-            ForeignStoreError::CStringConversion => write!(f, "namespace contained null byte"),
             ForeignStoreError::RegistrationEncode => write!(f, "failed to encode registration"),
             ForeignStoreError::RegistrationDecode => write!(f, "failed to decode registration"),
             ForeignStoreError::Status(status) => write!(f, "store callback returned {status:?}"),
@@ -118,26 +87,13 @@ impl ForeignNodeStateStore {
         Ok(Self { callbacks })
     }
 
-    fn namespace_to_cstring(value: &impl AsRef<str>) -> Result<CString, ForeignStoreError> {
-        CString::new(value.as_ref()).map_err(|_| ForeignStoreError::CStringConversion)
-    }
-
     fn call_load_root_key(
         &self,
-        app: &CString,
-        profile: &CString,
     ) -> Result<Option<[u8; crate::types::ROOT_KEY_LEN]>, ForeignStoreError> {
         let mut buffer = [0u8; crate::types::ROOT_KEY_LEN];
         let callback = self.callbacks.load_root_key.unwrap();
-        let status = unsafe {
-            callback(
-                self.callbacks.ctx,
-                app.as_ptr(),
-                profile.as_ptr(),
-                buffer.as_mut_ptr(),
-                buffer.len(),
-            )
-        };
+        let status =
+            unsafe { callback(self.callbacks.ctx, buffer.as_mut_ptr(), buffer.len()) };
         match status {
             WispersStatus::Success => Ok(Some(buffer)),
             WispersStatus::NotFound => Ok(None),
@@ -147,44 +103,26 @@ impl ForeignNodeStateStore {
 
     fn call_save_root_key(
         &self,
-        app: &CString,
-        profile: &CString,
         root_key: &[u8; crate::types::ROOT_KEY_LEN],
     ) -> Result<(), ForeignStoreError> {
         let callback = self.callbacks.save_root_key.unwrap();
-        let status = unsafe {
-            callback(
-                self.callbacks.ctx,
-                app.as_ptr(),
-                profile.as_ptr(),
-                root_key.as_ptr(),
-                root_key.len(),
-            )
-        };
+        let status = unsafe { callback(self.callbacks.ctx, root_key.as_ptr(), root_key.len()) };
         match status {
             WispersStatus::Success => Ok(()),
             other => Err(ForeignStoreError::Status(other)),
         }
     }
 
-    fn call_delete_root_key(
-        &self,
-        app: &CString,
-        profile: &CString,
-    ) -> Result<(), ForeignStoreError> {
+    fn call_delete_root_key(&self) -> Result<(), ForeignStoreError> {
         let callback = self.callbacks.delete_root_key.unwrap();
-        let status = unsafe { callback(self.callbacks.ctx, app.as_ptr(), profile.as_ptr()) };
+        let status = unsafe { callback(self.callbacks.ctx) };
         match status {
             WispersStatus::Success | WispersStatus::NotFound => Ok(()),
             other => Err(ForeignStoreError::Status(other)),
         }
     }
 
-    fn call_load_registration(
-        &self,
-        app: &CString,
-        profile: &CString,
-    ) -> Result<Option<NodeRegistration>, ForeignStoreError> {
+    fn call_load_registration(&self) -> Result<Option<NodeRegistration>, ForeignStoreError> {
         let callback = self.callbacks.load_registration.unwrap();
         let mut buffer = vec![0u8; INITIAL_REGISTRATION_BUFFER];
         let mut required = 0usize;
@@ -193,8 +131,6 @@ impl ForeignNodeStateStore {
             let status = unsafe {
                 callback(
                     self.callbacks.ctx,
-                    app.as_ptr(),
-                    profile.as_ptr(),
                     buffer.as_mut_ptr(),
                     buffer.len(),
                     &mut required,
@@ -221,35 +157,21 @@ impl ForeignNodeStateStore {
 
     fn call_save_registration(
         &self,
-        app: &CString,
-        profile: &CString,
         registration: Option<&NodeRegistration>,
     ) -> Result<(), ForeignStoreError> {
         let callback = self.callbacks.save_registration.unwrap();
-        let bytes = serialize_registration(registration)
-            .map_err(|_| ForeignStoreError::RegistrationEncode)?;
-        let status = unsafe {
-            callback(
-                self.callbacks.ctx,
-                app.as_ptr(),
-                profile.as_ptr(),
-                bytes.as_ptr(),
-                bytes.len(),
-            )
-        };
+        let bytes =
+            serialize_registration(registration).map_err(|_| ForeignStoreError::RegistrationEncode)?;
+        let status = unsafe { callback(self.callbacks.ctx, bytes.as_ptr(), bytes.len()) };
         match status {
             WispersStatus::Success => Ok(()),
             other => Err(ForeignStoreError::Status(other)),
         }
     }
 
-    fn call_delete_registration(
-        &self,
-        app: &CString,
-        profile: &CString,
-    ) -> Result<(), ForeignStoreError> {
+    fn call_delete_registration(&self) -> Result<(), ForeignStoreError> {
         let callback = self.callbacks.delete_registration.unwrap();
-        let status = unsafe { callback(self.callbacks.ctx, app.as_ptr(), profile.as_ptr()) };
+        let status = unsafe { callback(self.callbacks.ctx) };
         match status {
             WispersStatus::Success | WispersStatus::NotFound => Ok(()),
             other => Err(ForeignStoreError::Status(other)),
@@ -263,50 +185,33 @@ unsafe impl Sync for ForeignNodeStateStore {}
 impl NodeStateStore for ForeignNodeStateStore {
     type Error = ForeignStoreError;
 
-    fn load(
-        &self,
-        app_namespace: &AppNamespace,
-        profile_namespace: &ProfileNamespace,
-    ) -> Result<Option<NodeState>, Self::Error> {
-        let app_c = Self::namespace_to_cstring(app_namespace)?;
-        let profile_c = Self::namespace_to_cstring(profile_namespace)?;
-        let root_key = match self.call_load_root_key(&app_c, &profile_c)? {
+    fn load(&self) -> Result<Option<NodeState>, Self::Error> {
+        let root_key = match self.call_load_root_key()? {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
 
-        let registration = self.call_load_registration(&app_c, &profile_c)?;
-        let mut state =
-            NodeState::initialize_with_namespaces(app_namespace.clone(), profile_namespace.clone());
-        state.root_key = RootKey::from_bytes(root_key);
-        state.registration = registration;
-        Ok(Some(state))
+        let registration = self.call_load_registration()?;
+        Ok(Some(NodeState {
+            root_key: RootKey::from_bytes(root_key),
+            registration,
+        }))
     }
 
     fn save(&self, state: &NodeState) -> Result<(), Self::Error> {
-        let app_c = Self::namespace_to_cstring(&state.app_namespace)?;
-        let profile_c = Self::namespace_to_cstring(&state.profile_namespace)?;
-        self.call_save_root_key(&app_c, &profile_c, state.root_key.as_bytes())?;
-        self.call_save_registration(&app_c, &profile_c, state.registration.as_ref())?;
+        self.call_save_root_key(state.root_key.as_bytes())?;
+        self.call_save_registration(state.registration.as_ref())?;
         Ok(())
     }
 
-    fn delete(
-        &self,
-        app_namespace: &AppNamespace,
-        profile_namespace: &ProfileNamespace,
-    ) -> Result<(), Self::Error> {
-        let app_c = Self::namespace_to_cstring(app_namespace)?;
-        let profile_c = Self::namespace_to_cstring(profile_namespace)?;
-        self.call_delete_root_key(&app_c, &profile_c)?;
-        self.call_delete_registration(&app_c, &profile_c)?;
+    fn delete(&self) -> Result<(), Self::Error> {
+        self.call_delete_root_key()?;
+        self.call_delete_registration()?;
         Ok(())
     }
 }
 
-fn serialize_registration(
-    registration: Option<&NodeRegistration>,
-) -> Result<Vec<u8>, bincode::Error> {
+fn serialize_registration(registration: Option<&NodeRegistration>) -> Result<Vec<u8>, bincode::Error> {
     bincode::serialize(&registration)
 }
 

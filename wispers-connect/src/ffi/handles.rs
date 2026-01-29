@@ -46,9 +46,7 @@ impl From<NodeStateError<ForeignStoreError>> for WispersStatus {
                 WispersStatus::MissingCallback
             }
             NodeStateError::Store(
-                ForeignStoreError::CStringConversion
-                | ForeignStoreError::RegistrationEncode
-                | ForeignStoreError::RegistrationDecode,
+                ForeignStoreError::RegistrationEncode | ForeignStoreError::RegistrationDecode,
             ) => WispersStatus::StoreError,
             NodeStateError::Hub(_) => WispersStatus::StoreError, // TODO: add proper status
             NodeStateError::AlreadyRegistered => WispersStatus::AlreadyRegistered,
@@ -77,12 +75,5 @@ pub fn complete_registration_internal(
             .complete_registration(registration)
             .map(RegisteredImpl::Foreign)
             .map_err(Into::into),
-    }
-}
-
-pub fn registration_url_internal(pending: &PendingImpl, base_url: &str) -> String {
-    match pending {
-        PendingImpl::InMemory(inner) => inner.registration_url(base_url),
-        PendingImpl::Foreign(inner) => inner.registration_url(base_url),
     }
 }

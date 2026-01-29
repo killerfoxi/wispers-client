@@ -74,7 +74,7 @@ enum Command {
 fn read_registration_sync() -> Result<(String, i32)> {
     let storage = get_storage(None)?;
     let reg = storage
-        .read_registration("unused", None::<String>)
+        .read_registration()
         .context("failed to read registration")?
         .context("not registered")?;
 
@@ -138,8 +138,9 @@ fn daemonize_serve(_hub_override: Option<&str>) -> Result<()> {
 }
 
 fn get_storage(hub_override: Option<&str>) -> Result<NodeStorage<FileNodeStateStore>> {
-    let store = FileNodeStateStore::with_app_name("wconnect")
-        .context("could not determine config directory")?;
+    let config_dir = dirs::config_dir().context("could not determine config directory")?;
+    let store_dir = config_dir.join("wconnect").join("default");
+    let store = FileNodeStateStore::new(store_dir);
     let storage = NodeStorage::new(store);
     if let Some(addr) = hub_override {
         storage.override_hub_addr(addr);
@@ -191,7 +192,7 @@ async fn register(hub_override: Option<&str>, token: &str) -> Result<()> {
 
     // TODO: remove app/profile namespaces later
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -234,7 +235,7 @@ async fn activate(hub_override: Option<&str>, pairing_code: &str) -> Result<()> 
 
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -285,7 +286,7 @@ async fn nodes(hub_override: Option<&str>) -> Result<()> {
 
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -387,7 +388,7 @@ fn format_last_seen(millis: i64) -> String {
 async fn status(hub_override: Option<&str>) -> Result<()> {
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -444,7 +445,7 @@ async fn print_daemon_status(cg_id: &str, node_number: i32) {
 async fn logout(hub_override: Option<&str>) -> Result<()> {
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -462,7 +463,7 @@ async fn serve(hub_override: Option<&str>) -> Result<()> {
 
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -806,7 +807,7 @@ async fn handle_forward(stream: wispers_connect::QuicStream, port: u16) {
 async fn get_pairing_code(hub_override: Option<&str>) -> Result<()> {
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -850,7 +851,7 @@ async fn get_pairing_code(hub_override: Option<&str>) -> Result<()> {
 async fn ping(hub_override: Option<&str>, target_node: i32, use_quic: bool) -> Result<()> {
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 
@@ -984,7 +985,7 @@ async fn forward(
 
     let storage = get_storage(hub_override)?;
     let stage = storage
-        .restore_or_init_node_state("unused", None::<String>)
+        .restore_or_init_node_state()
         .await
         .context("failed to load node state")?;
 

@@ -5,10 +5,9 @@ use crate::roster::{
     build_activation_payload, create_activation_roster, create_bootstrap_roster, verify_roster,
 };
 use crate::storage::{NodeStateStore, SharedStore};
-use crate::types::{AppNamespace, NodeRegistration, NodeState, ProfileNamespace};
+use crate::types::{NodeRegistration, NodeState};
 use prost::Message;
 use std::sync::{Arc, RwLock};
-use urlencoding::encode;
 
 /// Default hub address for production use.
 const DEFAULT_HUB_ADDR: &str = "https://hub.connect.wispers.dev";
@@ -46,21 +45,8 @@ impl<S: NodeStateStore> NodeStorage<S> {
     ///
     /// Returns `None` if not registered. This is useful when you need
     /// registration info before starting an async runtime.
-    pub fn read_registration(
-        &self,
-        app_namespace: impl Into<AppNamespace>,
-        profile_namespace: Option<impl Into<ProfileNamespace>>,
-    ) -> Result<Option<NodeRegistration>, NodeStateError<S::Error>> {
-        let app_namespace = app_namespace.into();
-        let profile_namespace = profile_namespace
-            .map(Into::into)
-            .unwrap_or_else(ProfileNamespace::default);
-
-        let state = self
-            .store
-            .load(&app_namespace, &profile_namespace)
-            .map_err(NodeStateError::store)?;
-
+    pub fn read_registration(&self) -> Result<Option<NodeRegistration>, NodeStateError<S::Error>> {
+        let state = self.store.load().map_err(NodeStateError::store)?;
         Ok(state.and_then(|s| s.registration))
     }
 
@@ -73,29 +59,13 @@ impl<S: NodeStateStore> NodeStorage<S> {
     ///
     /// This method fetches the roster from the hub when the node is registered
     /// to determine if it has been activated.
-    pub async fn restore_or_init_node_state(
-        &self,
-        app_namespace: impl Into<AppNamespace>,
-        profile_namespace: Option<impl Into<ProfileNamespace>>,
-    ) -> Result<NodeStateStage<S>, NodeStateError<S::Error>> {
+    pub async fn restore_or_init_node_state(&self) -> Result<NodeStateStage<S>, NodeStateError<S::Error>> {
         use crate::hub::HubClient;
 
-        let app_namespace = app_namespace.into();
-        let profile_namespace = profile_namespace
-            .map(Into::into)
-            .unwrap_or_else(ProfileNamespace::default);
-
-        let state = match self
-            .store
-            .load(&app_namespace, &profile_namespace)
-            .map_err(NodeStateError::store)?
-        {
+        let state = match self.store.load().map_err(NodeStateError::store)? {
             Some(state) => state,
             None => {
-                let state = NodeState::initialize_with_namespaces(
-                    app_namespace.clone(),
-                    profile_namespace.clone(),
-                );
+                let state = NodeState::new();
                 self.store.save(&state).map_err(NodeStateError::store)?;
                 return Ok(NodeStateStage::Pending(PendingNodeState::new(
                     state,
@@ -153,8 +123,6 @@ impl<S: NodeStateStore> NodeStorage<S> {
                 roster,
                 registration: registration.clone(),
                 store: self.store.clone(),
-                app_namespace: state.app_namespace.clone(),
-                profile_namespace: state.profile_namespace.clone(),
                 config: self.config.clone(),
             }))
         } else {
@@ -165,7 +133,6 @@ impl<S: NodeStateStore> NodeStorage<S> {
             )?))
         }
     }
-
 }
 
 /// State machine representing the node's current stage.
@@ -229,25 +196,8 @@ impl<S: NodeStateStore> PendingNodeState<S> {
         self.config.read().unwrap().hub_addr.clone()
     }
 
-    pub fn app_namespace(&self) -> &AppNamespace {
-        &self.state.app_namespace
-    }
-
-    pub fn profile_namespace(&self) -> &ProfileNamespace {
-        &self.state.profile_namespace
-    }
-
     pub fn is_registered(&self) -> bool {
         self.state.is_registered()
-    }
-
-    pub fn registration_url(&self, base_url: &str) -> String {
-        let separator = if base_url.contains('?') { '&' } else { '?' };
-        format!(
-            "{base_url}{separator}app_namespace={}&profile_namespace={}",
-            encode(self.app_namespace().as_ref()),
-            encode(self.profile_namespace().as_ref())
-        )
     }
 
     pub fn complete_registration(
@@ -292,9 +242,7 @@ impl<S: NodeStateStore> PendingNodeState<S> {
 
     /// Logout: delete local state.
     pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        self.store
-            .delete(&self.state.app_namespace, &self.state.profile_namespace)
-            .map_err(NodeStateError::store)
+        self.store.delete().map_err(NodeStateError::store)
     }
 }
 
@@ -322,14 +270,6 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
         self.config.read().unwrap().hub_addr.clone()
     }
 
-    pub fn app_namespace(&self) -> &AppNamespace {
-        &self.state.app_namespace
-    }
-
-    pub fn profile_namespace(&self) -> &ProfileNamespace {
-        &self.state.profile_namespace
-    }
-
     pub fn registration(&self) -> &NodeRegistration {
         self.state
             .registration
@@ -341,9 +281,7 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
     pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
         // TODO: tell hub to remove this node from the connectivity group
         // For now, just delete local state
-        self.store
-            .delete(&self.state.app_namespace, &self.state.profile_namespace)
-            .map_err(NodeStateError::store)
+        self.store.delete().map_err(NodeStateError::store)
     }
 
     /// List all nodes in the connectivity group.
@@ -539,8 +477,6 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
             roster: cosigned_roster,
             registration: self.registration().clone(),
             store: self.store.clone(),
-            app_namespace: self.state.app_namespace.clone(),
-            profile_namespace: self.state.profile_namespace.clone(),
             config: self.config.clone(),
         })
     }
@@ -553,8 +489,6 @@ pub struct ActivatedNode<S: NodeStateStore> {
     roster: proto::roster::Roster,
     registration: NodeRegistration,
     store: SharedStore<S>,
-    app_namespace: AppNamespace,
-    profile_namespace: ProfileNamespace,
     config: SharedConfig,
 }
 
@@ -600,9 +534,7 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         // TODO: submit self-revocation to roster
         // TODO: tell hub to remove node from connectivity group
         // For now, just delete local state
-        self.store
-            .delete(&self.app_namespace, &self.profile_namespace)
-            .map_err(NodeStateError::store)
+        self.store.delete().map_err(NodeStateError::store)
     }
 
     /// Start a serving session.
@@ -881,8 +813,6 @@ impl ActivatedNode<crate::storage::InMemoryNodeStateStore> {
             roster,
             registration,
             store: std::sync::Arc::new(InMemoryNodeStateStore::new()),
-            app_namespace: AppNamespace::from("test"),
-            profile_namespace: ProfileNamespace::from("default"),
             config: std::sync::Arc::new(std::sync::RwLock::new(RuntimeConfig { hub_addr })),
         }
     }
@@ -923,42 +853,33 @@ async fn start_serving_impl(
 mod tests {
     use super::*;
     use crate::storage::InMemoryNodeStateStore;
-    use crate::types::DEFAULT_PROFILE_NAMESPACE;
 
     #[tokio::test]
-    async fn manager_initializes_and_reuses_state() {
+    async fn storage_initializes_and_reuses_state() {
         let storage = NodeStorage::new(InMemoryNodeStateStore::new());
-        let first_stage = storage
-            .restore_or_init_node_state("app.example", None::<String>)
-            .await
-            .unwrap();
+        let first_stage = storage.restore_or_init_node_state().await.unwrap();
         let pending = first_stage
             .into_pending()
             .expect("initial state should be pending");
-        assert_eq!(pending.app_namespace().as_ref(), "app.example");
-        assert_eq!(
-            pending.profile_namespace().as_ref(),
-            DEFAULT_PROFILE_NAMESPACE
-        );
         let first_key = *pending.root_key_bytes();
 
-        let second_stage = storage
-            .restore_or_init_node_state("app.example", None::<String>)
-            .await
-            .unwrap();
+        // Re-initialize should return the same state
+        let storage2 = NodeStorage::new(InMemoryNodeStateStore::new());
+        // Note: InMemoryNodeStateStore doesn't persist across instances,
+        // so we test with the same storage instance
+        drop(pending);
+        let second_stage = storage.restore_or_init_node_state().await.unwrap();
         let pending_second = second_stage
             .into_pending()
             .expect("state remains pending until registration");
         assert_eq!(pending_second.root_key_bytes(), &first_key);
+        drop(storage2); // silence unused warning
     }
 
     #[tokio::test]
     async fn completing_registration_persists_and_transitions() {
         let storage = NodeStorage::new(InMemoryNodeStateStore::new());
-        let stage = storage
-            .restore_or_init_node_state("app.example", None::<String>)
-            .await
-            .unwrap();
+        let stage = storage.restore_or_init_node_state().await.unwrap();
         let pending = stage
             .into_pending()
             .expect("expected pending state prior to registration");
@@ -968,13 +889,9 @@ mod tests {
         assert_eq!(registered.registration(), &registration);
 
         // Verify registration was persisted by checking the store directly
-        // (restore_or_init_node_state would require network access for registered nodes)
         let loaded = storage
             .store
-            .load(
-                &crate::types::AppNamespace::from("app.example"),
-                &crate::types::ProfileNamespace::default(),
-            )
+            .load()
             .unwrap()
             .expect("state should be persisted");
         assert!(loaded.is_registered());
