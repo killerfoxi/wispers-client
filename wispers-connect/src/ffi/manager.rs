@@ -7,7 +7,7 @@ use super::helpers::{c_str_to_string, WispersRegistrationInfo};
 use super::runtime;
 use crate::errors::WispersStatus;
 use crate::state::{NodeStateStage, NodeStorage};
-use crate::storage::foreign::WispersNodeStateStoreCallbacks;
+use crate::storage::foreign::WispersNodeStorageCallbacks;
 use crate::storage::{ForeignNodeStateStore, InMemoryNodeStateStore};
 use std::ffi::c_void;
 use std::os::raw::c_char;
@@ -22,7 +22,7 @@ pub extern "C" fn wispers_storage_new_in_memory() -> *mut WispersNodeStorageHand
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wispers_storage_new_with_callbacks(
-    callbacks: *const WispersNodeStateStoreCallbacks,
+    callbacks: *const WispersNodeStorageCallbacks,
 ) -> *mut WispersNodeStorageHandle {
     if callbacks.is_null() {
         return std::ptr::null_mut();

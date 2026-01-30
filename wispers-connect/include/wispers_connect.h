@@ -54,7 +54,7 @@ typedef struct {
     WispersStatus (*load_registration)(void *ctx, uint8_t *buffer, size_t buffer_len, size_t *out_len);
     WispersStatus (*save_registration)(void *ctx, const uint8_t *buffer, size_t buffer_len);
     WispersStatus (*delete_registration)(void *ctx);
-} WispersNodeStateStoreCallbacks;
+} WispersNodeStorageCallbacks;
 
 //------------------------------------------------------------------------------
 // Callback types for async operations
@@ -109,7 +109,7 @@ void wispers_registration_info_free(WispersRegistrationInfo *info);
 //------------------------------------------------------------------------------
 
 WispersNodeStorageHandle *wispers_storage_new_in_memory(void);
-WispersNodeStorageHandle *wispers_storage_new_with_callbacks(const WispersNodeStateStoreCallbacks *callbacks);
+WispersNodeStorageHandle *wispers_storage_new_with_callbacks(const WispersNodeStorageCallbacks *callbacks);
 void wispers_storage_free(WispersNodeStorageHandle *handle);
 
 // Read registration from local storage (sync, no hub contact).

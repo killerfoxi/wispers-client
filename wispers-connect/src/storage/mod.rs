@@ -6,7 +6,7 @@ pub mod foreign;
 pub mod in_memory;
 
 pub use file::{FileNodeStateStore, FileStoreError};
-pub use foreign::{ForeignNodeStateStore, ForeignStoreError, WispersNodeStateStoreCallbacks};
+pub use foreign::{ForeignNodeStateStore, ForeignStoreError, WispersNodeStorageCallbacks};
 pub use in_memory::{InMemoryNodeStateStore, InMemoryStoreError};
 
 /// Storage backend for node state.

@@ -13,7 +13,7 @@ const INITIAL_REGISTRATION_BUFFER: usize = 256;
 /// namespace or isolation information. The library does not manage namespacing.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct WispersNodeStateStoreCallbacks {
+pub struct WispersNodeStorageCallbacks {
     pub ctx: *mut c_void,
     pub load_root_key:
         Option<unsafe extern "C" fn(ctx: *mut c_void, out: *mut u8, len: usize) -> WispersStatus>,
@@ -35,11 +35,11 @@ pub struct WispersNodeStateStoreCallbacks {
     pub delete_registration: Option<unsafe extern "C" fn(ctx: *mut c_void) -> WispersStatus>,
 }
 
-unsafe impl Send for WispersNodeStateStoreCallbacks {}
-unsafe impl Sync for WispersNodeStateStoreCallbacks {}
+unsafe impl Send for WispersNodeStorageCallbacks {}
+unsafe impl Sync for WispersNodeStorageCallbacks {}
 
 pub struct ForeignNodeStateStore {
-    callbacks: WispersNodeStateStoreCallbacks,
+    callbacks: WispersNodeStorageCallbacks,
 }
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ impl fmt::Display for ForeignStoreError {
 impl std::error::Error for ForeignStoreError {}
 
 impl ForeignNodeStateStore {
-    pub fn new(callbacks: WispersNodeStateStoreCallbacks) -> Result<Self, ForeignStoreError> {
+    pub fn new(callbacks: WispersNodeStorageCallbacks) -> Result<Self, ForeignStoreError> {
         if callbacks.load_root_key.is_none() {
             return Err(ForeignStoreError::MissingCallback("load_root_key"));
         }

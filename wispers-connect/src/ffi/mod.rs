@@ -26,4 +26,4 @@ pub use nodes::{
     wispers_registered_node_free, wispers_registered_node_logout_async,
 };
 
-pub use crate::storage::foreign::WispersNodeStateStoreCallbacks;
+pub use crate::storage::foreign::WispersNodeStorageCallbacks;
