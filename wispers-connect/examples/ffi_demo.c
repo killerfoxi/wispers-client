@@ -26,7 +26,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <sys/time.h>
-#include <stdatomic.h>
+#include <pthread.h>
 
 //------------------------------------------------------------------------------
 // Constants and globals
@@ -41,18 +41,75 @@
 // Global options (parsed from argv before command)
 static const char *g_hub_addr = NULL;
 
-// Wait for async callback with timeout (in milliseconds)
-#define WAIT_FOR_CALLBACK(ctx, timeout_ms) \
-    for (int _i = 0; _i < (timeout_ms) / 10 && !atomic_load(&(ctx).called); _i++) { \
-        usleep(10000); \
+//------------------------------------------------------------------------------
+// Synchronization helpers using condition variables
+//------------------------------------------------------------------------------
+
+// All callback contexts embed this struct for synchronization
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int called;
+} SyncState;
+
+// Initialize synchronization state (call before starting async operation)
+static void sync_init(SyncState *s) {
+    pthread_mutex_init(&s->mutex, NULL);
+    pthread_cond_init(&s->cond, NULL);
+    s->called = 0;
+}
+
+// Clean up synchronization state (call when done with context)
+static void sync_destroy(SyncState *s) {
+    pthread_mutex_destroy(&s->mutex);
+    pthread_cond_destroy(&s->cond);
+}
+
+// Signal completion (call from callback, AFTER setting all other fields)
+static void sync_signal(SyncState *s) {
+    pthread_mutex_lock(&s->mutex);
+    s->called = 1;
+    pthread_cond_signal(&s->cond);
+    pthread_mutex_unlock(&s->mutex);
+}
+
+// Wait for completion with timeout. Returns 1 if signaled, 0 if timeout.
+static int sync_wait(SyncState *s, int timeout_ms) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_ms / 1000;
+    deadline.tv_nsec += (timeout_ms % 1000) * 1000000;
+    if (deadline.tv_nsec >= 1000000000) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000;
     }
+
+    pthread_mutex_lock(&s->mutex);
+    while (!s->called) {
+        int rc = pthread_cond_timedwait(&s->cond, &s->mutex, &deadline);
+        if (rc == ETIMEDOUT) {
+            pthread_mutex_unlock(&s->mutex);
+            return 0;  // Timeout
+        }
+    }
+    pthread_mutex_unlock(&s->mutex);
+    return 1;  // Signaled
+}
+
+// Check if signaled (non-blocking)
+static int sync_is_called(SyncState *s) {
+    pthread_mutex_lock(&s->mutex);
+    int called = s->called;
+    pthread_mutex_unlock(&s->mutex);
+    return called;
+}
 
 //------------------------------------------------------------------------------
 // Callback contexts
 //------------------------------------------------------------------------------
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     WispersStage stage;
     WispersPendingNodeHandle *pending;
@@ -61,19 +118,19 @@ typedef struct {
 } InitCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     WispersRegisteredNodeHandle *registered;
 } RegisterCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     WispersActivatedNodeHandle *activated;
 } ActivateCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     WispersServingHandle *serving;
     WispersServingSession *session;
@@ -81,30 +138,30 @@ typedef struct {
 } ServingCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     char *pairing_code;
 } PairingCodeCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
 } BasicCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     WispersQuicConnectionHandle *connection;
 } QuicConnCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     WispersQuicStreamHandle *stream;
 } QuicStreamCtx;
 
 typedef struct {
-    atomic_int called;
+    SyncState sync;
     WispersStatus status;
     uint8_t data[1024];  // Copy of data (buffer only valid during callback)
     size_t len;
@@ -128,7 +185,7 @@ static void init_callback(
     c->pending = pending;
     c->registered = registered;
     c->activated = activated;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void register_callback(
@@ -139,7 +196,7 @@ static void register_callback(
     RegisterCtx *c = (RegisterCtx *)ctx;
     c->status = status;
     c->registered = registered;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void activate_callback(
@@ -150,7 +207,7 @@ static void activate_callback(
     ActivateCtx *c = (ActivateCtx *)ctx;
     c->status = status;
     c->activated = activated;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void serving_callback(
@@ -165,7 +222,7 @@ static void serving_callback(
     c->serving = serving;
     c->session = session;
     c->incoming = incoming;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void pairing_code_callback(
@@ -176,13 +233,13 @@ static void pairing_code_callback(
     PairingCodeCtx *c = (PairingCodeCtx *)ctx;
     c->status = status;
     c->pairing_code = pairing_code;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void basic_callback(void *ctx, WispersStatus status) {
     BasicCtx *c = (BasicCtx *)ctx;
     c->status = status;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void quic_conn_callback(
@@ -193,7 +250,7 @@ static void quic_conn_callback(
     QuicConnCtx *c = (QuicConnCtx *)ctx;
     c->status = status;
     c->connection = connection;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void quic_stream_callback(
@@ -204,7 +261,7 @@ static void quic_stream_callback(
     QuicStreamCtx *c = (QuicStreamCtx *)ctx;
     c->status = status;
     c->stream = stream;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 static void data_callback(
@@ -223,7 +280,7 @@ static void data_callback(
         memcpy(c->data, data, len);
     }
     c->len = len;
-    atomic_store(&c->called, 1);
+    sync_signal(&c->sync);
 }
 
 //------------------------------------------------------------------------------
@@ -452,18 +509,19 @@ static int cmd_status(void) {
     }
 
     InitCtx ctx = {0};
+    sync_init(&ctx.sync);
     WispersStatus status = wispers_storage_restore_or_init_async(storage, &ctx, init_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start restore: %s\n", status_str(status));
+        sync_destroy(&ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(ctx, 5000);
-
-    if (!atomic_load(&ctx.called)) {
+    if (!sync_wait(&ctx.sync, 5000)) {
         fprintf(stderr, "Timeout waiting for restore callback\n");
+        sync_destroy(&ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -471,6 +529,7 @@ static int cmd_status(void) {
 
     if (ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Restore failed: %s\n", status_str(ctx.status));
+        sync_destroy(&ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -514,6 +573,7 @@ static int cmd_status(void) {
             break;
     }
 
+    sync_destroy(&ctx.sync);
     wispers_storage_free(storage);
     free(storage_ctx);
     return 0;
@@ -529,19 +589,20 @@ static int cmd_register(const char *token) {
 
     // First, restore state to get current stage
     InitCtx init_ctx = {0};
+    sync_init(&init_ctx.sync);
     WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start restore: %s\n", status_str(status));
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(init_ctx, 5000);
-
-    if (!atomic_load(&init_ctx.called) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&init_ctx.sync, 5000) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to restore state: %s\n",
-                atomic_load(&init_ctx.called) ? status_str(init_ctx.status) : "timeout");
+                sync_is_called(&init_ctx.sync) ? status_str(init_ctx.status) : "timeout");
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -552,6 +613,7 @@ static int cmd_register(const char *token) {
         fprintf(stderr, "Cannot register: already registered (stage=%d)\n", init_ctx.stage);
         if (init_ctx.registered) wispers_registered_node_free(init_ctx.registered);
         if (init_ctx.activated) wispers_activated_node_free(init_ctx.activated);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -560,20 +622,23 @@ static int cmd_register(const char *token) {
     // Register with the hub
     printf("Registering with hub...\n");
     RegisterCtx reg_ctx = {0};
+    sync_init(&reg_ctx.sync);
     status = wispers_pending_node_register_async(init_ctx.pending, token, &reg_ctx, register_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start registration: %s\n", status_str(status));
         wispers_pending_node_free(init_ctx.pending);
+        sync_destroy(&reg_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
     // Wait longer for hub communication
-    WAIT_FOR_CALLBACK(reg_ctx, 30000);
-
-    if (!atomic_load(&reg_ctx.called)) {
+    if (!sync_wait(&reg_ctx.sync, 30000)) {
         fprintf(stderr, "Timeout waiting for registration callback\n");
+        sync_destroy(&reg_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -581,6 +646,8 @@ static int cmd_register(const char *token) {
 
     if (reg_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Registration failed: %s\n", status_str(reg_ctx.status));
+        sync_destroy(&reg_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -597,6 +664,8 @@ static int cmd_register(const char *token) {
     }
 
     wispers_registered_node_free(reg_ctx.registered);
+    sync_destroy(&reg_ctx.sync);
+    sync_destroy(&init_ctx.sync);
     wispers_storage_free(storage);
     free(storage_ctx);
     return 0;
@@ -612,19 +681,20 @@ static int cmd_activate(const char *pairing_code) {
 
     // First, restore state to get current stage
     InitCtx init_ctx = {0};
+    sync_init(&init_ctx.sync);
     WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start restore: %s\n", status_str(status));
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(init_ctx, 5000);
-
-    if (!atomic_load(&init_ctx.called) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&init_ctx.sync, 5000) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to restore state: %s\n",
-                atomic_load(&init_ctx.called) ? status_str(init_ctx.status) : "timeout");
+                sync_is_called(&init_ctx.sync) ? status_str(init_ctx.status) : "timeout");
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -634,6 +704,7 @@ static int cmd_activate(const char *pairing_code) {
     if (init_ctx.stage == WISPERS_STAGE_PENDING) {
         fprintf(stderr, "Cannot activate: not registered yet\n");
         wispers_pending_node_free(init_ctx.pending);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -641,6 +712,7 @@ static int cmd_activate(const char *pairing_code) {
     if (init_ctx.stage == WISPERS_STAGE_ACTIVATED) {
         fprintf(stderr, "Cannot activate: already activated\n");
         wispers_activated_node_free(init_ctx.activated);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -649,20 +721,23 @@ static int cmd_activate(const char *pairing_code) {
     // Activate with the pairing code
     printf("Activating with pairing code...\n");
     ActivateCtx act_ctx = {0};
+    sync_init(&act_ctx.sync);
     status = wispers_registered_node_activate_async(init_ctx.registered, pairing_code, &act_ctx, activate_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start activation: %s\n", status_str(status));
         wispers_registered_node_free(init_ctx.registered);
+        sync_destroy(&act_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
     // Wait longer for activation (involves hub communication and potentially P2P)
-    WAIT_FOR_CALLBACK(act_ctx, 60000);
-
-    if (!atomic_load(&act_ctx.called)) {
+    if (!sync_wait(&act_ctx.sync, 60000)) {
         fprintf(stderr, "Timeout waiting for activation callback\n");
+        sync_destroy(&act_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -670,6 +745,8 @@ static int cmd_activate(const char *pairing_code) {
 
     if (act_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Activation failed: %s\n", status_str(act_ctx.status));
+        sync_destroy(&act_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -678,6 +755,8 @@ static int cmd_activate(const char *pairing_code) {
     printf("Activation successful!\n");
 
     wispers_activated_node_free(act_ctx.activated);
+    sync_destroy(&act_ctx.sync);
+    sync_destroy(&init_ctx.sync);
     wispers_storage_free(storage);
     free(storage_ctx);
     return 0;
@@ -687,16 +766,18 @@ static int cmd_activate(const char *pairing_code) {
 static void handle_quic_connection(WispersQuicConnectionHandle *conn) {
     // Accept a stream
     QuicStreamCtx stream_ctx = {0};
+    sync_init(&stream_ctx.sync);
     WispersStatus status = wispers_quic_connection_accept_stream_async(conn, &stream_ctx, quic_stream_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to start accept_stream: %s\n", status_str(status));
+        sync_destroy(&stream_ctx.sync);
         return;
     }
 
-    WAIT_FOR_CALLBACK(stream_ctx, 10000);
-    if (!atomic_load(&stream_ctx.called) || stream_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&stream_ctx.sync, 10000) || stream_ctx.status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to accept stream: %s\n",
-               atomic_load(&stream_ctx.called) ? status_str(stream_ctx.status) : "timeout");
+               sync_is_called(&stream_ctx.sync) ? status_str(stream_ctx.status) : "timeout");
+        sync_destroy(&stream_ctx.sync);
         return;
     }
 
@@ -704,17 +785,21 @@ static void handle_quic_connection(WispersQuicConnectionHandle *conn) {
 
     // Read the request
     DataCtx read_ctx = {0};
+    sync_init(&read_ctx.sync);
     status = wispers_quic_stream_read_async(stream_ctx.stream, 1024, &read_ctx, data_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to start read: %s\n", status_str(status));
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         return;
     }
 
-    WAIT_FOR_CALLBACK(read_ctx, 10000);
-    if (!atomic_load(&read_ctx.called) || read_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&read_ctx.sync, 10000) || read_ctx.status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to read: %s\n",
-               atomic_load(&read_ctx.called) ? status_str(read_ctx.status) : "timeout");
+               sync_is_called(&read_ctx.sync) ? status_str(read_ctx.status) : "timeout");
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         return;
     }
@@ -724,33 +809,48 @@ static void handle_quic_connection(WispersQuicConnectionHandle *conn) {
     // Respond with PONG
     const uint8_t pong_data[] = "PONG\n";
     BasicCtx write_ctx = {0};
+    sync_init(&write_ctx.sync);
     status = wispers_quic_stream_write_async(stream_ctx.stream, pong_data, sizeof(pong_data) - 1, &write_ctx, basic_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to start write: %s\n", status_str(status));
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         return;
     }
 
-    WAIT_FOR_CALLBACK(write_ctx, 10000);
-    if (!atomic_load(&write_ctx.called) || write_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&write_ctx.sync, 10000) || write_ctx.status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to write PONG: %s\n",
-               atomic_load(&write_ctx.called) ? status_str(write_ctx.status) : "timeout");
+               sync_is_called(&write_ctx.sync) ? status_str(write_ctx.status) : "timeout");
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         return;
     }
 
     // Finish the stream
     BasicCtx finish_ctx = {0};
+    sync_init(&finish_ctx.sync);
     status = wispers_quic_stream_finish_async(stream_ctx.stream, &finish_ctx, basic_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         printf("  Failed to start finish: %s\n", status_str(status));
+        sync_destroy(&finish_ctx.sync);
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         return;
     }
 
-    WAIT_FOR_CALLBACK(finish_ctx, 10000);
+    sync_wait(&finish_ctx.sync, 10000);
     printf("  Sent PONG response\n");
 
+    sync_destroy(&finish_ctx.sync);
+    sync_destroy(&write_ctx.sync);
+    sync_destroy(&read_ctx.sync);
+    sync_destroy(&stream_ctx.sync);
     wispers_quic_stream_free(stream_ctx.stream);
 }
 
@@ -764,19 +864,20 @@ static int cmd_serve(int print_pairing_code) {
 
     // First, restore state to get current stage
     InitCtx init_ctx = {0};
+    sync_init(&init_ctx.sync);
     WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start restore: %s\n", status_str(status));
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(init_ctx, 5000);
-
-    if (!atomic_load(&init_ctx.called) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&init_ctx.sync, 5000) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to restore state: %s\n",
-                atomic_load(&init_ctx.called) ? status_str(init_ctx.status) : "timeout");
+                sync_is_called(&init_ctx.sync) ? status_str(init_ctx.status) : "timeout");
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -786,6 +887,7 @@ static int cmd_serve(int print_pairing_code) {
     if (init_ctx.stage == WISPERS_STAGE_PENDING) {
         fprintf(stderr, "Cannot serve: not registered yet\n");
         wispers_pending_node_free(init_ctx.pending);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -793,6 +895,7 @@ static int cmd_serve(int print_pairing_code) {
 
     // Start serving based on stage
     ServingCtx serv_ctx = {0};
+    sync_init(&serv_ctx.sync);
     if (init_ctx.stage == WISPERS_STAGE_REGISTERED) {
         printf("Starting serving session (registered node - bootstrap only)...\n");
         status = wispers_registered_node_start_serving_async(init_ctx.registered, &serv_ctx, serving_callback);
@@ -803,6 +906,8 @@ static int cmd_serve(int print_pairing_code) {
 
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start serving: %s\n", status_str(status));
+        sync_destroy(&serv_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         if (init_ctx.registered) wispers_registered_node_free(init_ctx.registered);
         if (init_ctx.activated) wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
@@ -811,10 +916,10 @@ static int cmd_serve(int print_pairing_code) {
     }
 
     // Wait for serving to start
-    WAIT_FOR_CALLBACK(serv_ctx, 30000);
-
-    if (!atomic_load(&serv_ctx.called)) {
+    if (!sync_wait(&serv_ctx.sync, 30000)) {
         fprintf(stderr, "Timeout waiting for serving callback\n");
+        sync_destroy(&serv_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         if (init_ctx.registered) wispers_registered_node_free(init_ctx.registered);
         if (init_ctx.activated) wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
@@ -824,6 +929,8 @@ static int cmd_serve(int print_pairing_code) {
 
     if (serv_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start serving: %s\n", status_str(serv_ctx.status));
+        sync_destroy(&serv_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         if (init_ctx.registered) wispers_registered_node_free(init_ctx.registered);
         if (init_ctx.activated) wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
@@ -836,13 +943,13 @@ static int cmd_serve(int print_pairing_code) {
     // Generate and print pairing code if requested
     if (print_pairing_code) {
         PairingCodeCtx pc_ctx = {0};
+        sync_init(&pc_ctx.sync);
         status = wispers_serving_handle_generate_pairing_code_async(serv_ctx.serving, &pc_ctx, pairing_code_callback);
         if (status == WISPERS_STATUS_SUCCESS) {
-            WAIT_FOR_CALLBACK(pc_ctx, 10000);
-            if (atomic_load(&pc_ctx.called) && pc_ctx.status == WISPERS_STATUS_SUCCESS && pc_ctx.pairing_code) {
+            if (sync_wait(&pc_ctx.sync, 10000) && pc_ctx.status == WISPERS_STATUS_SUCCESS && pc_ctx.pairing_code) {
                 printf("Pairing code: %s\n", pc_ctx.pairing_code);
                 wispers_string_free(pc_ctx.pairing_code);
-            } else if (atomic_load(&pc_ctx.called)) {
+            } else if (sync_is_called(&pc_ctx.sync)) {
                 fprintf(stderr, "Failed to generate pairing code: %s\n", status_str(pc_ctx.status));
             } else {
                 fprintf(stderr, "Timeout generating pairing code\n");
@@ -850,15 +957,20 @@ static int cmd_serve(int print_pairing_code) {
         } else {
             fprintf(stderr, "Failed to start pairing code generation: %s\n", status_str(status));
         }
+        sync_destroy(&pc_ctx.sync);
     }
 
     printf("Serving... (press Ctrl-C to stop)\n");
 
     // Run the serving session in background
     BasicCtx run_ctx = {0};
+    sync_init(&run_ctx.sync);
     status = wispers_serving_session_run_async(serv_ctx.session, &run_ctx, basic_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to run serving session: %s\n", status_str(status));
+        sync_destroy(&run_ctx.sync);
+        sync_destroy(&serv_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_serving_handle_free(serv_ctx.serving);
         wispers_serving_session_free(serv_ctx.session);
         wispers_incoming_connections_free(serv_ctx.incoming);
@@ -872,39 +984,44 @@ static int cmd_serve(int print_pairing_code) {
     // If activated, handle incoming QUIC connections with ping/pong responder
     if (serv_ctx.incoming != NULL) {
         printf("Listening for incoming QUIC connections...\n");
-        while (!atomic_load(&run_ctx.called)) {
+        while (!sync_is_called(&run_ctx.sync)) {
             // Try to accept an incoming QUIC connection
             QuicConnCtx conn_ctx = {0};
+            sync_init(&conn_ctx.sync);
             status = wispers_incoming_accept_quic_async(serv_ctx.incoming, &conn_ctx, quic_conn_callback);
             if (status != WISPERS_STATUS_SUCCESS) {
                 fprintf(stderr, "Failed to start accept_quic: %s\n", status_str(status));
+                sync_destroy(&conn_ctx.sync);
                 usleep(1000000);  // Wait 1s before retrying
                 continue;
             }
 
             // Wait for connection with periodic checks if session ended
-            while (!atomic_load(&conn_ctx.called) && !atomic_load(&run_ctx.called)) {
+            while (!sync_is_called(&conn_ctx.sync) && !sync_is_called(&run_ctx.sync)) {
                 usleep(100000);  // 100ms
             }
 
-            if (atomic_load(&run_ctx.called)) {
+            if (sync_is_called(&run_ctx.sync)) {
+                sync_destroy(&conn_ctx.sync);
                 break;  // Session ended
             }
 
-            if (!atomic_load(&conn_ctx.called) || conn_ctx.status != WISPERS_STATUS_SUCCESS) {
-                if (atomic_load(&conn_ctx.called)) {
+            if (!sync_is_called(&conn_ctx.sync) || conn_ctx.status != WISPERS_STATUS_SUCCESS) {
+                if (sync_is_called(&conn_ctx.sync)) {
                     printf("Accept connection failed: %s\n", status_str(conn_ctx.status));
                 }
+                sync_destroy(&conn_ctx.sync);
                 continue;
             }
 
             printf("Accepted incoming QUIC connection\n");
             handle_quic_connection(conn_ctx.connection);
             wispers_quic_connection_free(conn_ctx.connection);
+            sync_destroy(&conn_ctx.sync);
         }
     } else {
         // Registered node - just wait for session to end
-        while (!atomic_load(&run_ctx.called)) {
+        while (!sync_is_called(&run_ctx.sync)) {
             usleep(100000);  // 100ms
         }
     }
@@ -912,6 +1029,9 @@ static int cmd_serve(int print_pairing_code) {
     printf("Serving session ended: %s\n", status_str(run_ctx.status));
 
     // Cleanup
+    sync_destroy(&run_ctx.sync);
+    sync_destroy(&serv_ctx.sync);
+    sync_destroy(&init_ctx.sync);
     wispers_serving_handle_free(serv_ctx.serving);
     wispers_incoming_connections_free(serv_ctx.incoming);
     if (init_ctx.registered) wispers_registered_node_free(init_ctx.registered);
@@ -931,19 +1051,20 @@ static int cmd_ping(int node_number) {
 
     // First, restore state to get current stage
     InitCtx init_ctx = {0};
+    sync_init(&init_ctx.sync);
     WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start restore: %s\n", status_str(status));
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(init_ctx, 5000);
-
-    if (!atomic_load(&init_ctx.called) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&init_ctx.sync, 5000) || init_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to restore state: %s\n",
-                atomic_load(&init_ctx.called) ? status_str(init_ctx.status) : "timeout");
+                sync_is_called(&init_ctx.sync) ? status_str(init_ctx.status) : "timeout");
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -954,6 +1075,7 @@ static int cmd_ping(int node_number) {
         fprintf(stderr, "Cannot ping: node must be activated (current stage=%d)\n", init_ctx.stage);
         if (init_ctx.pending) wispers_pending_node_free(init_ctx.pending);
         if (init_ctx.registered) wispers_registered_node_free(init_ctx.registered);
+        sync_destroy(&init_ctx.sync);
         wispers_storage_free(storage);
         free(storage_ctx);
         return 1;
@@ -964,9 +1086,12 @@ static int cmd_ping(int node_number) {
 
     // Connect via QUIC
     QuicConnCtx conn_ctx = {0};
+    sync_init(&conn_ctx.sync);
     status = wispers_activated_node_connect_quic_async(init_ctx.activated, node_number, &conn_ctx, quic_conn_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to start QUIC connection: %s\n", status_str(status));
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
         free(storage_ctx);
@@ -974,10 +1099,10 @@ static int cmd_ping(int node_number) {
     }
 
     // Wait for connection (up to 30 seconds for NAT traversal)
-    WAIT_FOR_CALLBACK(conn_ctx, 30000);
-
-    if (!atomic_load(&conn_ctx.called)) {
+    if (!sync_wait(&conn_ctx.sync, 30000)) {
         fprintf(stderr, "Timeout waiting for QUIC connection\n");
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
         free(storage_ctx);
@@ -986,6 +1111,8 @@ static int cmd_ping(int node_number) {
 
     if (conn_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "QUIC connection failed: %s\n", status_str(conn_ctx.status));
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
         free(storage_ctx);
@@ -996,9 +1123,13 @@ static int cmd_ping(int node_number) {
 
     // Open a stream
     QuicStreamCtx stream_ctx = {0};
+    sync_init(&stream_ctx.sync);
     status = wispers_quic_connection_open_stream_async(conn_ctx.connection, &stream_ctx, quic_stream_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to open stream: %s\n", status_str(status));
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
@@ -1006,11 +1137,12 @@ static int cmd_ping(int node_number) {
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(stream_ctx, 10000);
-
-    if (!atomic_load(&stream_ctx.called) || stream_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&stream_ctx.sync, 10000) || stream_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to open stream: %s\n",
-                atomic_load(&stream_ctx.called) ? status_str(stream_ctx.status) : "timeout");
+                sync_is_called(&stream_ctx.sync) ? status_str(stream_ctx.status) : "timeout");
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
         wispers_storage_free(storage);
@@ -1021,9 +1153,14 @@ static int cmd_ping(int node_number) {
     // Write PING
     const uint8_t ping_data[] = "PING\n";
     BasicCtx write_ctx = {0};
+    sync_init(&write_ctx.sync);
     status = wispers_quic_stream_write_async(stream_ctx.stream, ping_data, sizeof(ping_data) - 1, &write_ctx, basic_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to write PING: %s\n", status_str(status));
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1032,11 +1169,13 @@ static int cmd_ping(int node_number) {
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(write_ctx, 10000);
-
-    if (!atomic_load(&write_ctx.called) || write_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&write_ctx.sync, 10000) || write_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to write PING: %s\n",
-                atomic_load(&write_ctx.called) ? status_str(write_ctx.status) : "timeout");
+                sync_is_called(&write_ctx.sync) ? status_str(write_ctx.status) : "timeout");
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1047,9 +1186,15 @@ static int cmd_ping(int node_number) {
 
     // Finish write side
     BasicCtx finish_ctx = {0};
+    sync_init(&finish_ctx.sync);
     status = wispers_quic_stream_finish_async(stream_ctx.stream, &finish_ctx, basic_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to finish stream: %s\n", status_str(status));
+        sync_destroy(&finish_ctx.sync);
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1058,11 +1203,14 @@ static int cmd_ping(int node_number) {
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(finish_ctx, 10000);
-
-    if (!atomic_load(&finish_ctx.called) || finish_ctx.status != WISPERS_STATUS_SUCCESS) {
+    if (!sync_wait(&finish_ctx.sync, 10000) || finish_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to finish stream: %s\n",
-                atomic_load(&finish_ctx.called) ? status_str(finish_ctx.status) : "timeout");
+                sync_is_called(&finish_ctx.sync) ? status_str(finish_ctx.status) : "timeout");
+        sync_destroy(&finish_ctx.sync);
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1073,9 +1221,16 @@ static int cmd_ping(int node_number) {
 
     // Read response
     DataCtx read_ctx = {0};
+    sync_init(&read_ctx.sync);
     status = wispers_quic_stream_read_async(stream_ctx.stream, 1024, &read_ctx, data_callback);
     if (status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to read response: %s\n", status_str(status));
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&finish_ctx.sync);
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1084,13 +1239,18 @@ static int cmd_ping(int node_number) {
         return 1;
     }
 
-    WAIT_FOR_CALLBACK(read_ctx, 10000);
-
+    int read_ok = sync_wait(&read_ctx.sync, 10000);
     long long end_time = current_time_ms();
     long long elapsed = end_time - start_time;
 
-    if (!atomic_load(&read_ctx.called)) {
+    if (!read_ok) {
         fprintf(stderr, "Timeout waiting for PONG response\n");
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&finish_ctx.sync);
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1101,6 +1261,12 @@ static int cmd_ping(int node_number) {
 
     if (read_ctx.status != WISPERS_STATUS_SUCCESS) {
         fprintf(stderr, "Failed to read response: %s\n", status_str(read_ctx.status));
+        sync_destroy(&read_ctx.sync);
+        sync_destroy(&finish_ctx.sync);
+        sync_destroy(&write_ctx.sync);
+        sync_destroy(&stream_ctx.sync);
+        sync_destroy(&conn_ctx.sync);
+        sync_destroy(&init_ctx.sync);
         wispers_quic_stream_free(stream_ctx.stream);
         wispers_quic_connection_free(conn_ctx.connection);
         wispers_activated_node_free(init_ctx.activated);
@@ -1122,9 +1288,17 @@ static int cmd_ping(int node_number) {
     wispers_quic_stream_free(stream_ctx.stream);
 
     BasicCtx close_ctx = {0};
+    sync_init(&close_ctx.sync);
     wispers_quic_connection_close_async(conn_ctx.connection, &close_ctx, basic_callback);
-    WAIT_FOR_CALLBACK(close_ctx, 5000);
+    sync_wait(&close_ctx.sync, 5000);
 
+    sync_destroy(&close_ctx.sync);
+    sync_destroy(&read_ctx.sync);
+    sync_destroy(&finish_ctx.sync);
+    sync_destroy(&write_ctx.sync);
+    sync_destroy(&stream_ctx.sync);
+    sync_destroy(&conn_ctx.sync);
+    sync_destroy(&init_ctx.sync);
     wispers_activated_node_free(init_ctx.activated);
     wispers_storage_free(storage);
     free(storage_ctx);
