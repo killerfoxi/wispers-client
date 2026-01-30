@@ -524,6 +524,28 @@ void wispers_serving_session_free(WispersServingSession *session);
 // Free an incoming connections handle.
 void wispers_incoming_connections_free(WispersIncomingConnections *incoming);
 
+// Accept an incoming UDP connection.
+// The incoming connections handle is NOT consumed.
+// Waits for a peer to connect via UDP and returns the connection handle.
+// On success, callback receives the UDP connection handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_incoming_accept_udp_async(
+    WispersIncomingConnections *handle,
+    void *ctx,
+    WispersUdpConnectionCallback callback
+);
+
+// Accept an incoming QUIC connection.
+// The incoming connections handle is NOT consumed.
+// Waits for a peer to connect via QUIC and returns the connection handle.
+// On success, callback receives the QUIC connection handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_incoming_accept_quic_async(
+    WispersIncomingConnections *handle,
+    void *ctx,
+    WispersQuicConnectionCallback callback
+);
+
 //------------------------------------------------------------------------------
 // Utilities
 //------------------------------------------------------------------------------

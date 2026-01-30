@@ -1,6 +1,10 @@
 //! FFI bindings for serving sessions.
 
 use super::callbacks::CallbackContext;
+use super::p2p::{
+    WispersQuicConnectionCallback, WispersQuicConnectionHandle, WispersUdpConnectionCallback,
+    WispersUdpConnectionHandle,
+};
 use super::runtime;
 use crate::errors::WispersStatus;
 use crate::serving::{IncomingConnections, ServingHandle, ServingSession};
@@ -72,6 +76,125 @@ pub extern "C" fn wispers_incoming_connections_free(handle: *mut WispersIncoming
     unsafe {
         drop(Box::from_raw(handle));
     }
+}
+
+// Helper to send incoming connections pointer across threads.
+// Safety: The caller must ensure the pointer remains valid and is not accessed
+// concurrently from multiple threads.
+struct SendableIncomingPtr(*mut WispersIncomingConnections);
+unsafe impl Send for SendableIncomingPtr {}
+unsafe impl Sync for SendableIncomingPtr {}
+
+impl SendableIncomingPtr {
+    /// Get a mutable reference to the inner IncomingConnections.
+    /// SAFETY: The caller must ensure the pointer is valid.
+    unsafe fn get(&self) -> &mut IncomingConnections {
+        unsafe { &mut (*self.0).0 }
+    }
+}
+
+/// Accept an incoming UDP connection.
+///
+/// The incoming connections handle is NOT consumed.
+/// Waits for a peer to connect via UDP and returns the connection handle.
+/// On success, callback receives the UDP connection handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_incoming_accept_udp_async(
+    handle: *mut WispersIncomingConnections,
+    ctx: *mut c_void,
+    callback: WispersUdpConnectionCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    let ctx = CallbackContext(ctx);
+    let ptr = SendableIncomingPtr(handle);
+
+    runtime::spawn(async move {
+        // Safety: caller must ensure handle is valid and not used concurrently
+        let incoming = unsafe { ptr.get() };
+        let result = incoming.udp.recv().await;
+
+        match result {
+            Some(Ok(conn)) => {
+                let h = Box::into_raw(Box::new(WispersUdpConnectionHandle(conn)));
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::Success, h);
+                }
+            }
+            Some(Err(_)) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+            None => {
+                // Channel closed (session ended)
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+        }
+    });
+
+    WispersStatus::Success
+}
+
+/// Accept an incoming QUIC connection.
+///
+/// The incoming connections handle is NOT consumed.
+/// Waits for a peer to connect via QUIC and returns the connection handle.
+/// On success, callback receives the QUIC connection handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_incoming_accept_quic_async(
+    handle: *mut WispersIncomingConnections,
+    ctx: *mut c_void,
+    callback: WispersQuicConnectionCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    let ctx = CallbackContext(ctx);
+    let ptr = SendableIncomingPtr(handle);
+
+    runtime::spawn(async move {
+        // Safety: caller must ensure handle is valid and not used concurrently
+        let incoming = unsafe { ptr.get() };
+        let result = incoming.quic.recv().await;
+
+        match result {
+            Some(Ok(conn)) => {
+                let h = Box::into_raw(Box::new(WispersQuicConnectionHandle(conn)));
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::Success, h);
+                }
+            }
+            Some(Err(_)) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+            None => {
+                // Channel closed (session ended)
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+        }
+    });
+
+    WispersStatus::Success
 }
 
 // Start serving functions
