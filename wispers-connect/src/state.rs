@@ -266,8 +266,8 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
         Ok(Self { state, store, config })
     }
 
-    /// Get the hub address (for FFI).
-    pub fn hub_addr(&self) -> String {
+    /// Get the hub address (internal use only).
+    pub(crate) fn hub_addr(&self) -> String {
         self.config.read().unwrap().hub_addr.clone()
     }
 
@@ -276,6 +276,11 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
             .registration
             .as_ref()
             .expect("registration must be present")
+    }
+
+    /// Get the root key bytes (internal use only).
+    pub(crate) fn root_key_bytes(&self) -> &[u8; crate::types::ROOT_KEY_LEN] {
+        self.state.root_key.as_bytes()
     }
 
     /// Logout: deregister from hub, then delete local state.
@@ -523,9 +528,14 @@ impl<S: NodeStateStore> ActivatedNode<S> {
         self.registration.node_number
     }
 
-    /// Get the hub address (for FFI).
-    pub fn hub_addr(&self) -> String {
+    /// Get the hub address (internal use only).
+    pub(crate) fn hub_addr(&self) -> String {
         self.config.read().unwrap().hub_addr.clone()
+    }
+
+    /// Get the X25519 key pair (internal use only).
+    pub(crate) fn x25519_key(&self) -> &X25519KeyPair {
+        &self.x25519_key
     }
 
     /// List all nodes in the connectivity group.

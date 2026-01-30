@@ -722,6 +722,81 @@ static int test_activated_list_nodes_null_handle(void) {
 }
 
 //------------------------------------------------------------------------------
+// Phase 7: Serving tests
+//------------------------------------------------------------------------------
+
+static int test_serving_handle_free_null(void) {
+    TEST("serving_handle_free handles NULL");
+    wispers_serving_handle_free(NULL);
+    PASS();
+    return 0;
+}
+
+static int test_serving_session_free_null(void) {
+    TEST("serving_session_free handles NULL");
+    wispers_serving_session_free(NULL);
+    PASS();
+    return 0;
+}
+
+static int test_incoming_connections_free_null(void) {
+    TEST("incoming_connections_free handles NULL");
+    wispers_incoming_connections_free(NULL);
+    PASS();
+    return 0;
+}
+
+static int test_registered_start_serving_null_handle(void) {
+    TEST("registered_start_serving rejects NULL handle");
+
+    WispersStatus status = wispers_registered_node_start_serving_async(NULL, NULL, NULL);
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_activated_start_serving_null_handle(void) {
+    TEST("activated_start_serving rejects NULL handle");
+
+    WispersStatus status = wispers_activated_node_start_serving_async(NULL, NULL, NULL);
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_generate_pairing_code_null_handle(void) {
+    TEST("generate_pairing_code rejects NULL handle");
+
+    WispersStatus status = wispers_serving_handle_generate_pairing_code_async(NULL, NULL, NULL);
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_session_run_null_handle(void) {
+    TEST("session_run rejects NULL handle");
+
+    WispersStatus status = wispers_serving_session_run_async(NULL, NULL, NULL);
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_shutdown_null_handle(void) {
+    TEST("shutdown rejects NULL handle");
+
+    WispersStatus status = wispers_serving_handle_shutdown_async(NULL, NULL, NULL);
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+//------------------------------------------------------------------------------
 // Main
 //------------------------------------------------------------------------------
 
@@ -775,6 +850,17 @@ int main(void) {
     failures += test_registered_list_nodes_null_handle();
     failures += test_registered_list_nodes_null_callback();
     failures += test_activated_list_nodes_null_handle();
+
+    // Phase 7 tests
+    printf("\n-- Phase 7: Serving --\n");
+    failures += test_serving_handle_free_null();
+    failures += test_serving_session_free_null();
+    failures += test_incoming_connections_free_null();
+    failures += test_registered_start_serving_null_handle();
+    failures += test_activated_start_serving_null_handle();
+    failures += test_generate_pairing_code_null_handle();
+    failures += test_session_run_null_handle();
+    failures += test_shutdown_null_handle();
 
     printf("\n");
     if (failures == 0) {

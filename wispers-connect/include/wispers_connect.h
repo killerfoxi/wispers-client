@@ -39,6 +39,9 @@ typedef struct WispersNodeStorageHandle WispersNodeStorageHandle;
 typedef struct WispersPendingNodeHandle WispersPendingNodeHandle;
 typedef struct WispersRegisteredNodeHandle WispersRegisteredNodeHandle;
 typedef struct WispersActivatedNodeHandle WispersActivatedNodeHandle;
+typedef struct WispersServingHandle WispersServingHandle;
+typedef struct WispersServingSession WispersServingSession;
+typedef struct WispersIncomingConnections WispersIncomingConnections;
 
 // Host-provided storage callbacks. All functions must be non-null when used.
 // The ctx pointer carries all context the host needs, including any namespace
@@ -115,6 +118,25 @@ typedef void (*WispersNodeListCallback)(
     void *ctx,
     WispersStatus status,
     WispersNodeList *list
+);
+
+// Callback for start_serving that receives session components.
+// serving_handle and session are always provided on success.
+// incoming is only provided for activated nodes (NULL for registered nodes).
+typedef void (*WispersStartServingCallback)(
+    void *ctx,
+    WispersStatus status,
+    WispersServingHandle *serving_handle,
+    WispersServingSession *session,
+    WispersIncomingConnections *incoming
+);
+
+// Callback that receives a pairing code string.
+// The pairing code must be freed with wispers_string_free().
+typedef void (*WispersPairingCodeCallback)(
+    void *ctx,
+    WispersStatus status,
+    char *pairing_code
 );
 
 //------------------------------------------------------------------------------
@@ -263,6 +285,70 @@ WispersStatus wispers_activated_node_list_nodes_async(
 
 // TODO: wispers_activated_node_connect_udp_async - Phase 8
 // TODO: wispers_activated_node_connect_quic_async - Phase 8
+
+//------------------------------------------------------------------------------
+// Serving
+//------------------------------------------------------------------------------
+
+// Start a serving session for a registered node.
+// Registered nodes can serve for bootstrapping but cannot accept P2P connections.
+// The registered handle is NOT consumed.
+// On success, callback receives serving_handle and session (incoming will be NULL).
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_registered_node_start_serving_async(
+    WispersRegisteredNodeHandle *handle,
+    void *ctx,
+    WispersStartServingCallback callback
+);
+
+// Start a serving session for an activated node.
+// Activated nodes can accept P2P connections.
+// The activated handle is NOT consumed.
+// On success, callback receives serving_handle, session, and incoming connections handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_activated_node_start_serving_async(
+    WispersActivatedNodeHandle *handle,
+    void *ctx,
+    WispersStartServingCallback callback
+);
+
+// Generate a pairing code for endorsing a new node.
+// The serving handle is NOT consumed.
+// On success, callback receives the pairing code string (must free with wispers_string_free).
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_serving_handle_generate_pairing_code_async(
+    WispersServingHandle *handle,
+    void *ctx,
+    WispersPairingCodeCallback callback
+);
+
+// Run the serving session event loop.
+// The session handle is CONSUMED by this call.
+// The callback is invoked when the session ends (either by shutdown or error).
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_serving_session_run_async(
+    WispersServingSession *session,
+    void *ctx,
+    WispersCallback callback
+);
+
+// Request the serving session to shut down.
+// The serving handle is NOT consumed.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_serving_handle_shutdown_async(
+    WispersServingHandle *handle,
+    void *ctx,
+    WispersCallback callback
+);
+
+// Free a serving handle.
+void wispers_serving_handle_free(WispersServingHandle *handle);
+
+// Free a serving session handle.
+void wispers_serving_session_free(WispersServingSession *session);
+
+// Free an incoming connections handle.
+void wispers_incoming_connections_free(WispersIncomingConnections *incoming);
 
 //------------------------------------------------------------------------------
 // Utilities

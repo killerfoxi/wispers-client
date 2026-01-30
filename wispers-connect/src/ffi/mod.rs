@@ -4,6 +4,7 @@ mod helpers;
 mod manager;
 mod nodes;
 pub(crate) mod runtime;
+mod serving;
 
 pub use callbacks::{
     WispersActivatedCallback, WispersCallback, WispersInitCallback, WispersNodeListCallback,
@@ -29,6 +30,14 @@ pub use nodes::{
     wispers_pending_node_register_async, wispers_registered_node_activate_async,
     wispers_registered_node_free, wispers_registered_node_list_nodes_async,
     wispers_registered_node_logout_async,
+};
+pub use serving::{
+    wispers_activated_node_start_serving_async, wispers_incoming_connections_free,
+    wispers_registered_node_start_serving_async, wispers_serving_handle_free,
+    wispers_serving_handle_generate_pairing_code_async, wispers_serving_handle_shutdown_async,
+    wispers_serving_session_free, wispers_serving_session_run_async, WispersIncomingConnections,
+    WispersPairingCodeCallback, WispersServingHandle, WispersServingSession,
+    WispersStartServingCallback,
 };
 
 pub use crate::storage::foreign::WispersNodeStorageCallbacks;
