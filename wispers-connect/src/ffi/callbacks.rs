@@ -61,6 +61,15 @@ pub type WispersActivatedCallback = Option<
     ),
 >;
 
+/// Callback that receives a node list.
+pub type WispersNodeListCallback = Option<
+    unsafe extern "C" fn(
+        ctx: *mut c_void,
+        status: WispersStatus,
+        list: *mut super::helpers::WispersNodeList,
+    ),
+>;
+
 /// Node state stage indicator for FFI.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

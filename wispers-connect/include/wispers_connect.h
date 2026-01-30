@@ -91,6 +91,33 @@ typedef void (*WispersActivatedCallback)(
 );
 
 //------------------------------------------------------------------------------
+// Node info (returned by list_nodes)
+//------------------------------------------------------------------------------
+
+// Information about a node in the connectivity group.
+typedef struct {
+    int32_t node_number;
+    char *name;              // Owned, freed by wispers_node_list_free()
+    int64_t last_seen_at_millis;
+} WispersNode;
+
+// List of nodes. Free with wispers_node_list_free().
+typedef struct {
+    WispersNode *nodes;
+    size_t count;
+} WispersNodeList;
+
+// Free a node list and all contained strings.
+void wispers_node_list_free(WispersNodeList *list);
+
+// Callback that receives a node list.
+typedef void (*WispersNodeListCallback)(
+    void *ctx,
+    WispersStatus status,
+    WispersNodeList *list
+);
+
+//------------------------------------------------------------------------------
 // Registration info (returned by read_registration)
 //------------------------------------------------------------------------------
 
@@ -199,7 +226,15 @@ WispersStatus wispers_registered_node_activate_async(
     WispersActivatedCallback callback
 );
 
-// TODO: wispers_registered_node_list_nodes_async - Phase 6
+// List all nodes in the connectivity group.
+// The registered handle is NOT consumed and remains valid after this call.
+// On success, callback receives a WispersNodeList that must be freed.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_registered_node_list_nodes_async(
+    WispersRegisteredNodeHandle *handle,
+    void *ctx,
+    WispersNodeListCallback callback
+);
 
 //------------------------------------------------------------------------------
 // Activated node
@@ -214,6 +249,16 @@ WispersStatus wispers_activated_node_logout_async(
     WispersActivatedNodeHandle *handle,
     void *ctx,
     WispersCallback callback
+);
+
+// List all nodes in the connectivity group.
+// The activated handle is NOT consumed and remains valid after this call.
+// On success, callback receives a WispersNodeList that must be freed.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_activated_node_list_nodes_async(
+    WispersActivatedNodeHandle *handle,
+    void *ctx,
+    WispersNodeListCallback callback
 );
 
 // TODO: wispers_activated_node_connect_udp_async - Phase 8

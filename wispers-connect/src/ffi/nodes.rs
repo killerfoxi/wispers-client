@@ -1,9 +1,9 @@
-use super::callbacks::{CallbackContext, WispersRegisteredCallback};
+use super::callbacks::{CallbackContext, WispersNodeListCallback, WispersRegisteredCallback};
 use super::handles::{
-    PendingImpl, RegisteredImpl, WispersActivatedNodeHandle, WispersPendingNodeHandle,
-    WispersRegisteredNodeHandle, complete_registration_internal,
+    ActivatedImpl, PendingImpl, RegisteredImpl, WispersActivatedNodeHandle,
+    WispersPendingNodeHandle, WispersRegisteredNodeHandle, complete_registration_internal,
 };
-use super::helpers::{c_str_to_string, reset_out_ptr};
+use super::helpers::{c_str_to_string, reset_out_ptr, WispersNodeList};
 use super::runtime;
 use crate::errors::WispersStatus;
 use crate::types::{AuthToken, ConnectivityGroupId, NodeRegistration};
@@ -432,3 +432,120 @@ pub extern "C" fn wispers_registered_node_activate_async(
 
     WispersStatus::Success
 }
+
+/// List all nodes in the connectivity group for a registered node.
+///
+/// The registered handle is NOT consumed and remains valid after this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_registered_node_list_nodes_async(
+    handle: *mut WispersRegisteredNodeHandle,
+    ctx: *mut c_void,
+    callback: WispersNodeListCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    let wrapper = unsafe { &*handle };
+    let ctx = CallbackContext(ctx);
+
+    // Extract what we need before spawning (list_nodes only needs hub_addr and registration)
+    let (hub_addr, registration) = match &wrapper.0 {
+        RegisteredImpl::InMemory(registered) => {
+            (registered.hub_addr(), registered.registration().clone())
+        }
+        RegisteredImpl::Foreign(registered) => {
+            (registered.hub_addr(), registered.registration().clone())
+        }
+    };
+
+    runtime::spawn(async move {
+        let result = list_nodes_impl(&hub_addr, &registration).await;
+        handle_list_nodes_result_hub(result, ctx, callback);
+    });
+
+    WispersStatus::Success
+}
+
+/// List all nodes in the connectivity group for an activated node.
+///
+/// The activated handle is NOT consumed and remains valid after this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_activated_node_list_nodes_async(
+    handle: *mut WispersActivatedNodeHandle,
+    ctx: *mut c_void,
+    callback: WispersNodeListCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    let wrapper = unsafe { &*handle };
+    let ctx = CallbackContext(ctx);
+
+    let (hub_addr, registration) = match &wrapper.0 {
+        ActivatedImpl::InMemory(activated) => {
+            (activated.hub_addr(), activated.registration().clone())
+        }
+        ActivatedImpl::Foreign(activated) => {
+            (activated.hub_addr(), activated.registration().clone())
+        }
+    };
+
+    runtime::spawn(async move {
+        let result = list_nodes_impl(&hub_addr, &registration).await;
+        handle_list_nodes_result_hub(result, ctx, callback);
+    });
+
+    WispersStatus::Success
+}
+
+async fn list_nodes_impl(
+    hub_addr: &str,
+    registration: &NodeRegistration,
+) -> Result<Vec<crate::hub::Node>, crate::hub::HubError> {
+    use crate::hub::HubClient;
+
+    let mut client = HubClient::connect(hub_addr).await?;
+    client.list_nodes(registration).await
+}
+
+fn handle_list_nodes_result_hub(
+    result: Result<Vec<crate::hub::Node>, crate::hub::HubError>,
+    ctx: CallbackContext,
+    callback: unsafe extern "C" fn(*mut c_void, WispersStatus, *mut WispersNodeList),
+) {
+    match result {
+        Ok(nodes) => {
+            match WispersNodeList::from_nodes(nodes) {
+                Ok(list) => {
+                    let list_ptr = Box::into_raw(Box::new(list));
+                    unsafe {
+                        callback(ctx.ptr(), WispersStatus::Success, list_ptr);
+                    }
+                }
+                Err(status) => {
+                    unsafe {
+                        callback(ctx.ptr(), status, std::ptr::null_mut());
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            unsafe {
+                callback(ctx.ptr(), WispersStatus::HubError, std::ptr::null_mut());
+            }
+        }
+    }
+}
+

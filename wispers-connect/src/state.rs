@@ -266,7 +266,8 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
         Ok(Self { state, store, config })
     }
 
-    fn hub_addr(&self) -> String {
+    /// Get the hub address (for FFI).
+    pub fn hub_addr(&self) -> String {
         self.config.read().unwrap().hub_addr.clone()
     }
 
@@ -520,6 +521,11 @@ impl<S: NodeStateStore> ActivatedNode<S> {
     /// Get the node's number.
     pub fn node_number(&self) -> i32 {
         self.registration.node_number
+    }
+
+    /// Get the hub address (for FFI).
+    pub fn hub_addr(&self) -> String {
+        self.config.read().unwrap().hub_addr.clone()
     }
 
     /// List all nodes in the connectivity group.

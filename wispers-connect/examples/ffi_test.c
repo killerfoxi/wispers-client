@@ -624,6 +624,104 @@ static int test_activate_null_callback(void) {
 }
 
 //------------------------------------------------------------------------------
+// Phase 6: Node listing tests
+//------------------------------------------------------------------------------
+
+// Test context for node list callbacks
+typedef struct {
+    int called;
+    WispersStatus status;
+    WispersNodeList *list;
+} NodeListTestCtx;
+
+static void node_list_callback(
+    void *ctx,
+    WispersStatus status,
+    WispersNodeList *list
+) {
+    NodeListTestCtx *test = (NodeListTestCtx *)ctx;
+    test->called = 1;
+    test->status = status;
+    test->list = list;
+}
+
+static int test_node_list_free_null(void) {
+    TEST("node_list_free handles NULL");
+
+    // Should not crash
+    wispers_node_list_free(NULL);
+
+    PASS();
+    return 0;
+}
+
+static int test_registered_list_nodes_null_handle(void) {
+    TEST("registered_list_nodes rejects NULL handle");
+
+    NodeListTestCtx ctx = {0};
+    WispersStatus status = wispers_registered_node_list_nodes_async(
+        NULL, &ctx, node_list_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_registered_list_nodes_null_callback(void) {
+    TEST("registered_list_nodes rejects NULL callback");
+
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) FAIL("failed to create storage");
+
+    // Get pending handle and complete registration
+    InitTestCtx init_ctx = {0};
+    WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start init");
+    }
+
+    for (int i = 0; i < 100 && !init_ctx.called; i++) {
+        usleep(10000);
+    }
+    if (!init_ctx.called || init_ctx.stage != WISPERS_STAGE_PENDING) {
+        wispers_storage_free(storage);
+        FAIL("failed to get pending handle");
+    }
+
+    WispersRegisteredNodeHandle *registered = NULL;
+    status = wispers_pending_node_complete_registration(
+        init_ctx.pending, "test-group", 1, "test-token", &registered);
+    if (status != WISPERS_STATUS_SUCCESS || !registered) {
+        wispers_storage_free(storage);
+        FAIL("failed to complete registration");
+    }
+
+    status = wispers_registered_node_list_nodes_async(registered, NULL, NULL);
+    wispers_registered_node_free(registered);
+    wispers_storage_free(storage);
+
+    if (status != WISPERS_STATUS_MISSING_CALLBACK) FAIL("expected MISSING_CALLBACK");
+
+    PASS();
+    return 0;
+}
+
+static int test_activated_list_nodes_null_handle(void) {
+    TEST("activated_list_nodes rejects NULL handle");
+
+    NodeListTestCtx ctx = {0};
+    WispersStatus status = wispers_activated_node_list_nodes_async(
+        NULL, &ctx, node_list_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+//------------------------------------------------------------------------------
 // Main
 //------------------------------------------------------------------------------
 
@@ -670,6 +768,13 @@ int main(void) {
     failures += test_activate_null_handle();
     failures += test_activate_null_pairing_code();
     failures += test_activate_null_callback();
+
+    // Phase 6 tests
+    printf("\n-- Phase 6: Node Listing --\n");
+    failures += test_node_list_free_null();
+    failures += test_registered_list_nodes_null_handle();
+    failures += test_registered_list_nodes_null_callback();
+    failures += test_activated_list_nodes_null_handle();
 
     printf("\n");
     if (failures == 0) {

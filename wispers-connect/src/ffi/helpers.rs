@@ -1,4 +1,5 @@
 use crate::errors::WispersStatus;
+use crate::hub::Node;
 use crate::types::NodeRegistration;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -93,5 +94,77 @@ pub extern "C" fn wispers_registration_info_free(info: *mut WispersRegistrationI
             drop(CString::from_raw(info.auth_token));
             info.auth_token = ptr::null_mut();
         }
+    }
+}
+
+/// Node information returned to C callers.
+#[repr(C)]
+pub struct WispersNode {
+    pub node_number: c_int,
+    pub name: *mut c_char,
+    pub last_seen_at_millis: i64,
+}
+
+/// List of nodes returned to C callers.
+#[repr(C)]
+pub struct WispersNodeList {
+    pub nodes: *mut WispersNode,
+    pub count: usize,
+}
+
+impl WispersNodeList {
+    /// Create from a Vec<Node>, allocating C strings.
+    pub fn from_nodes(nodes: Vec<Node>) -> Result<Self, WispersStatus> {
+        let count = nodes.len();
+        if count == 0 {
+            return Ok(Self {
+                nodes: ptr::null_mut(),
+                count: 0,
+            });
+        }
+
+        let mut c_nodes: Vec<WispersNode> = Vec::with_capacity(count);
+        for node in nodes {
+            let name = CString::new(node.name).map_err(|_| WispersStatus::InvalidUtf8)?;
+            c_nodes.push(WispersNode {
+                node_number: node.node_number,
+                name: name.into_raw(),
+                last_seen_at_millis: node.last_seen_at_millis,
+            });
+        }
+
+        let ptr = c_nodes.as_mut_ptr();
+        std::mem::forget(c_nodes);
+
+        Ok(Self { nodes: ptr, count })
+    }
+
+    /// Create an empty list.
+    pub fn empty() -> Self {
+        Self {
+            nodes: ptr::null_mut(),
+            count: 0,
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_node_list_free(list: *mut WispersNodeList) {
+    if list.is_null() {
+        return;
+    }
+    unsafe {
+        let list = &mut *list;
+        if !list.nodes.is_null() && list.count > 0 {
+            // Reconstruct the Vec to properly free it
+            let nodes = Vec::from_raw_parts(list.nodes, list.count, list.count);
+            for node in nodes {
+                if !node.name.is_null() {
+                    drop(CString::from_raw(node.name));
+                }
+            }
+        }
+        list.nodes = ptr::null_mut();
+        list.count = 0;
     }
 }
