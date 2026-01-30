@@ -504,6 +504,126 @@ static int test_activated_logout_null_callback(void) {
 }
 
 //------------------------------------------------------------------------------
+// Phase 5: Activation tests
+//------------------------------------------------------------------------------
+
+// Test context for activation callbacks
+typedef struct {
+    int called;
+    WispersStatus status;
+    WispersActivatedNodeHandle *activated;
+} ActivateTestCtx;
+
+static void activate_callback(
+    void *ctx,
+    WispersStatus status,
+    WispersActivatedNodeHandle *handle
+) {
+    ActivateTestCtx *test = (ActivateTestCtx *)ctx;
+    test->called = 1;
+    test->status = status;
+    test->activated = handle;
+}
+
+static int test_activate_null_handle(void) {
+    TEST("activate rejects NULL handle");
+
+    ActivateTestCtx ctx = {0};
+    WispersStatus status = wispers_registered_node_activate_async(
+        NULL, "1-abc123xyz0", &ctx, activate_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_activate_null_pairing_code(void) {
+    TEST("activate rejects NULL pairing_code");
+
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) FAIL("failed to create storage");
+
+    // Get pending handle and complete registration
+    InitTestCtx init_ctx = {0};
+    WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start init");
+    }
+
+    for (int i = 0; i < 100 && !init_ctx.called; i++) {
+        usleep(10000);
+    }
+    if (!init_ctx.called || init_ctx.stage != WISPERS_STAGE_PENDING) {
+        wispers_storage_free(storage);
+        FAIL("failed to get pending handle");
+    }
+
+    WispersRegisteredNodeHandle *registered = NULL;
+    status = wispers_pending_node_complete_registration(
+        init_ctx.pending, "test-group", 1, "test-token", &registered);
+    if (status != WISPERS_STATUS_SUCCESS || !registered) {
+        wispers_storage_free(storage);
+        FAIL("failed to complete registration");
+    }
+
+    ActivateTestCtx activate_ctx = {0};
+    status = wispers_registered_node_activate_async(
+        registered, NULL, &activate_ctx, activate_callback);
+
+    wispers_registered_node_free(registered);
+    wispers_storage_free(storage);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_activate_null_callback(void) {
+    TEST("activate rejects NULL callback");
+
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) FAIL("failed to create storage");
+
+    // Get pending handle and complete registration
+    InitTestCtx init_ctx = {0};
+    WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start init");
+    }
+
+    for (int i = 0; i < 100 && !init_ctx.called; i++) {
+        usleep(10000);
+    }
+    if (!init_ctx.called || init_ctx.stage != WISPERS_STAGE_PENDING) {
+        wispers_storage_free(storage);
+        FAIL("failed to get pending handle");
+    }
+
+    WispersRegisteredNodeHandle *registered = NULL;
+    status = wispers_pending_node_complete_registration(
+        init_ctx.pending, "test-group", 1, "test-token", &registered);
+    if (status != WISPERS_STATUS_SUCCESS || !registered) {
+        wispers_storage_free(storage);
+        FAIL("failed to complete registration");
+    }
+
+    status = wispers_registered_node_activate_async(
+        registered, "1-abc123xyz0", NULL, NULL);
+
+    wispers_registered_node_free(registered);
+    wispers_storage_free(storage);
+
+    if (status != WISPERS_STATUS_MISSING_CALLBACK) FAIL("expected MISSING_CALLBACK");
+
+    PASS();
+    return 0;
+}
+
+//------------------------------------------------------------------------------
 // Main
 //------------------------------------------------------------------------------
 
@@ -544,6 +664,12 @@ int main(void) {
     failures += test_registered_logout_null_callback();
     failures += test_activated_logout_null_handle();
     failures += test_activated_logout_null_callback();
+
+    // Phase 5 tests
+    printf("\n-- Phase 5: Activation --\n");
+    failures += test_activate_null_handle();
+    failures += test_activate_null_pairing_code();
+    failures += test_activate_null_callback();
 
     printf("\n");
     if (failures == 0) {

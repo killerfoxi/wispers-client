@@ -352,3 +352,83 @@ pub extern "C" fn wispers_activated_node_logout_async(
 
     WispersStatus::Success
 }
+
+/// Activate a registered node by pairing with an endorser.
+///
+/// The pairing code format is "node_number-secret" (e.g., "1-abc123xyz0").
+/// On success, the callback receives the activated node handle.
+/// The registered handle is CONSUMED by this call and must not be used afterward.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_registered_node_activate_async(
+    handle: *mut WispersRegisteredNodeHandle,
+    pairing_code: *const c_char,
+    ctx: *mut c_void,
+    callback: super::callbacks::WispersActivatedCallback,
+) -> WispersStatus {
+    use super::handles::ActivatedImpl;
+
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let pairing_code_str = match c_str_to_string(pairing_code) {
+        Ok(s) => s,
+        Err(status) => return status,
+    };
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    // Consume the handle
+    let wrapper = unsafe { Box::from_raw(handle) };
+    let ctx = CallbackContext(ctx);
+
+    match wrapper.0 {
+        RegisteredImpl::InMemory(registered) => {
+            runtime::spawn(async move {
+                let result = registered.activate(&pairing_code_str).await;
+                match result {
+                    Ok(activated) => {
+                        let h = Box::into_raw(Box::new(WispersActivatedNodeHandle(
+                            ActivatedImpl::InMemory(activated),
+                        )));
+                        unsafe {
+                            callback(ctx.ptr(), WispersStatus::Success, h);
+                        }
+                    }
+                    Err(e) => {
+                        let status = map_error_in_memory(&e);
+                        unsafe {
+                            callback(ctx.ptr(), status, std::ptr::null_mut());
+                        }
+                    }
+                }
+            });
+        }
+        RegisteredImpl::Foreign(registered) => {
+            runtime::spawn(async move {
+                let result = registered.activate(&pairing_code_str).await;
+                match result {
+                    Ok(activated) => {
+                        let h = Box::into_raw(Box::new(WispersActivatedNodeHandle(
+                            ActivatedImpl::Foreign(activated),
+                        )));
+                        unsafe {
+                            callback(ctx.ptr(), WispersStatus::Success, h);
+                        }
+                    }
+                    Err(e) => {
+                        let status = map_error_foreign(&e);
+                        unsafe {
+                            callback(ctx.ptr(), status, std::ptr::null_mut());
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    WispersStatus::Success
+}

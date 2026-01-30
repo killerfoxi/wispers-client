@@ -187,7 +187,18 @@ WispersStatus wispers_registered_node_logout_async(
     WispersCallback callback
 );
 
-// TODO: wispers_registered_node_activate_async - Phase 5
+// Activate a registered node by pairing with an endorser.
+// The pairing code format is "node_number-secret" (e.g., "1-abc123xyz0").
+// On success, callback receives the activated node handle.
+// The registered handle is CONSUMED and must not be used afterward.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_registered_node_activate_async(
+    WispersRegisteredNodeHandle *handle,
+    const char *pairing_code,
+    void *ctx,
+    WispersActivatedCallback callback
+);
+
 // TODO: wispers_registered_node_list_nodes_async - Phase 6
 
 //------------------------------------------------------------------------------
