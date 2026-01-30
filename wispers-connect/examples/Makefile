@@ -28,8 +28,8 @@ ffi_demo: ffi_demo.c $(LIB) $(INCLUDE)/wispers_connect.h
 	$(CC) $(CFLAGS) -I$(INCLUDE) ffi_demo.c $(LIB) -o ffi_demo
 
 demo: ffi_demo
-	@echo "Demo built. Run with: ./ffi_demo <command>"
-	@echo "Commands: status, register <token>, activate <code>, ping <node>"
+	@echo "Demo built. Run with: ./ffi_demo [--hub <addr>] <command>"
+	@echo "Commands: status, register <token>, activate <code>, serve [--pairing-code], ping <node>"
 
 clean:
 	rm -f ffi_test ffi_demo
