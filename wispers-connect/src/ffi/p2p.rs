@@ -4,19 +4,27 @@ use super::callbacks::CallbackContext;
 use super::handles::ActivatedImpl;
 use super::runtime;
 use crate::errors::WispersStatus;
-use crate::p2p::UdpConnection;
+use crate::p2p::{QuicConnection, QuicStream, UdpConnection};
 use std::ffi::c_void;
 use std::os::raw::c_int;
 
-// Helper to send raw pointers across threads
-struct SendablePtr(*mut WispersUdpConnectionHandle);
-unsafe impl Send for SendablePtr {}
+// Helpers to send raw pointers across threads
 
-impl SendablePtr {
-    /// Get a reference to the inner UdpConnection.
-    /// SAFETY: The caller must ensure the pointer is valid.
+struct SendableUdpConnPtr(*mut WispersUdpConnectionHandle);
+unsafe impl Send for SendableUdpConnPtr {}
+
+impl SendableUdpConnPtr {
     unsafe fn get(&self) -> &UdpConnection {
         unsafe { &(*self.0).0 }
+    }
+}
+
+struct SendableActivatedPtr(*mut super::handles::WispersActivatedNodeHandle);
+unsafe impl Send for SendableActivatedPtr {}
+
+impl SendableActivatedPtr {
+    unsafe fn get(&self) -> &super::handles::WispersActivatedNodeHandle {
+        unsafe { &*self.0 }
     }
 }
 
@@ -74,37 +82,15 @@ pub extern "C" fn wispers_activated_node_connect_udp_async(
         None => return WispersStatus::MissingCallback,
     };
 
-    let wrapper = unsafe { &*handle };
     let ctx = CallbackContext(ctx);
-
-    // Extract what we need before spawning
-    let (hub_addr, registration, signing_key, x25519_key, roster) = match &wrapper.0 {
-        ActivatedImpl::InMemory(activated) => (
-            activated.hub_addr(),
-            activated.registration().clone(),
-            activated.signing_key().clone(),
-            activated.x25519_key().clone(),
-            activated.roster().clone(),
-        ),
-        ActivatedImpl::Foreign(activated) => (
-            activated.hub_addr(),
-            activated.registration().clone(),
-            activated.signing_key().clone(),
-            activated.x25519_key().clone(),
-            activated.roster().clone(),
-        ),
-    };
+    let activated_ptr = SendableActivatedPtr(handle);
 
     runtime::spawn(async move {
-        let result = connect_udp_impl(
-            &hub_addr,
-            &registration,
-            &signing_key,
-            &x25519_key,
-            &roster,
-            peer_node_number,
-        )
-        .await;
+        let wrapper = unsafe { activated_ptr.get() };
+        let result = match &wrapper.0 {
+            ActivatedImpl::InMemory(activated) => activated.connect_udp(peer_node_number).await,
+            ActivatedImpl::Foreign(activated) => activated.connect_udp(peer_node_number).await,
+        };
 
         match result {
             Ok(conn) => {
@@ -113,9 +99,9 @@ pub extern "C" fn wispers_activated_node_connect_udp_async(
                     callback(ctx.ptr(), WispersStatus::Success, h);
                 }
             }
-            Err(status) => {
+            Err(_) => {
                 unsafe {
-                    callback(ctx.ptr(), status, std::ptr::null_mut());
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
                 }
             }
         }
@@ -172,7 +158,7 @@ pub extern "C" fn wispers_udp_connection_recv_async(
     // as long as the caller doesn't free the handle while recv is pending.
     // A safer approach would be to wrap in Arc, but that changes the API.
     let ctx = CallbackContext(ctx);
-    let conn_ptr_wrapper = SendablePtr(handle);
+    let conn_ptr_wrapper = SendableUdpConnPtr(handle);
 
     runtime::spawn(async move {
         let conn = unsafe { conn_ptr_wrapper.get() };
@@ -208,103 +194,249 @@ pub extern "C" fn wispers_udp_connection_close(handle: *mut WispersUdpConnection
     wrapper.0.close();
 }
 
-// Implementation helper for connect_udp
-async fn connect_udp_impl(
-    hub_addr: &str,
-    registration: &crate::types::NodeRegistration,
-    signing_key: &crate::crypto::SigningKeyPair,
-    x25519_key: &crate::crypto::X25519KeyPair,
-    roster: &crate::hub::proto::roster::Roster,
-    peer_node_number: i32,
-) -> Result<UdpConnection, WispersStatus> {
-    use crate::hub::proto;
-    use crate::hub::HubClient;
-    use crate::ice::IceCaller;
-    use crate::p2p::UdpConnection;
-    use ed25519_dalek::pkcs8::DecodePublicKey;
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+//------------------------------------------------------------------------------
+// QUIC Connection FFI
+//------------------------------------------------------------------------------
 
-    // Connect to hub
-    let mut client = HubClient::connect(hub_addr)
-        .await
-        .map_err(|_| WispersStatus::HubError)?;
+/// Opaque handle to a QUIC P2P connection.
+pub struct WispersQuicConnectionHandle(pub(crate) QuicConnection);
 
-    // Get STUN/TURN configuration
-    let stun_turn_config = client
-        .get_stun_turn_config(registration)
-        .await
-        .map_err(|_| WispersStatus::HubError)?;
+/// Opaque handle to a QUIC stream.
+pub struct WispersQuicStreamHandle(pub(crate) QuicStream);
 
-    // Create ICE caller and gather candidates
-    let ice_caller =
-        IceCaller::new(&stun_turn_config).map_err(|_| WispersStatus::ConnectionFailed)?;
-    let caller_sdp = ice_caller.local_description().to_string();
+// Helpers to send raw pointers across threads
+struct SendableQuicConnPtr(*mut WispersQuicConnectionHandle);
+unsafe impl Send for SendableQuicConnPtr {}
 
-    // Build the StartConnectionRequest
-    // Sign: answerer_node_number || caller_x25519_public_key || caller_sdp
-    let mut message_to_sign = Vec::new();
-    message_to_sign.extend_from_slice(&peer_node_number.to_le_bytes());
-    message_to_sign.extend_from_slice(&x25519_key.public_key());
-    message_to_sign.extend_from_slice(caller_sdp.as_bytes());
-    let signature = signing_key.sign(&message_to_sign);
+impl SendableQuicConnPtr {
+    unsafe fn get(&self) -> &QuicConnection {
+        unsafe { &(*self.0).0 }
+    }
+}
 
-    let request = proto::StartConnectionRequest {
-        answerer_node_number: peer_node_number,
-        caller_x25519_public_key: x25519_key.public_key().to_vec(),
-        caller_sdp,
-        signature,
-        stun_turn_config: Some(stun_turn_config),
-        transport: proto::Transport::Datagram.into(),
+struct SendableQuicStreamPtr(*mut WispersQuicStreamHandle);
+unsafe impl Send for SendableQuicStreamPtr {}
+
+impl SendableQuicStreamPtr {
+    unsafe fn get(&self) -> &QuicStream {
+        unsafe { &(*self.0).0 }
+    }
+}
+
+/// Callback that receives a QUIC connection handle.
+pub type WispersQuicConnectionCallback = Option<
+    unsafe extern "C" fn(
+        ctx: *mut c_void,
+        status: WispersStatus,
+        connection: *mut WispersQuicConnectionHandle,
+    ),
+>;
+
+/// Callback that receives a QUIC stream handle.
+pub type WispersQuicStreamCallback = Option<
+    unsafe extern "C" fn(
+        ctx: *mut c_void,
+        status: WispersStatus,
+        stream: *mut WispersQuicStreamHandle,
+    ),
+>;
+
+/// Free a QUIC connection handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_quic_connection_free(handle: *mut WispersQuicConnectionHandle) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(handle));
+    }
+}
+
+/// Free a QUIC stream handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_quic_stream_free(handle: *mut WispersQuicStreamHandle) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(handle));
+    }
+}
+
+/// Connect to a peer node using QUIC transport.
+///
+/// The activated handle is NOT consumed.
+/// On success, callback receives the QUIC connection handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_activated_node_connect_quic_async(
+    handle: *mut super::handles::WispersActivatedNodeHandle,
+    peer_node_number: c_int,
+    ctx: *mut c_void,
+    callback: WispersQuicConnectionCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
     };
 
-    // Send to hub, which forwards to the answerer
-    let response = client
-        .start_connection(registration, request)
-        .await
-        .map_err(|_| WispersStatus::HubError)?;
+    let ctx = CallbackContext(ctx);
+    let activated_ptr = SendableActivatedPtr(handle);
 
-    // Verify answerer's signature against roster
-    let peer_node = roster
-        .nodes
-        .iter()
-        .find(|n| n.node_number == peer_node_number)
-        .ok_or(WispersStatus::ConnectionFailed)?;
+    runtime::spawn(async move {
+        let wrapper = unsafe { activated_ptr.get() };
+        let result = match &wrapper.0 {
+            ActivatedImpl::InMemory(activated) => activated.connect_quic(peer_node_number).await,
+            ActivatedImpl::Foreign(activated) => activated.connect_quic(peer_node_number).await,
+        };
 
-    let verifying_key = VerifyingKey::from_public_key_der(&peer_node.public_key_spki)
-        .map_err(|_| WispersStatus::ConnectionFailed)?;
+        match result {
+            Ok(conn) => {
+                let h = Box::into_raw(Box::new(WispersQuicConnectionHandle(conn)));
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::Success, h);
+                }
+            }
+            Err(_) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+        }
+    });
 
-    // Verify signature over: connection_id || answerer_x25519_public_key || answerer_sdp
-    let mut message_to_verify = Vec::new();
-    message_to_verify.extend_from_slice(&response.connection_id.to_le_bytes());
-    message_to_verify.extend_from_slice(&response.answerer_x25519_public_key);
-    message_to_verify.extend_from_slice(response.answerer_sdp.as_bytes());
+    WispersStatus::Success
+}
 
-    let sig_bytes: [u8; 64] = response
-        .signature
-        .clone()
-        .try_into()
-        .map_err(|_| WispersStatus::ConnectionFailed)?;
-    let sig = Signature::from_bytes(&sig_bytes);
+/// Open a new bidirectional stream on a QUIC connection.
+///
+/// The connection handle is NOT consumed.
+/// On success, callback receives the stream handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_quic_connection_open_stream_async(
+    handle: *mut WispersQuicConnectionHandle,
+    ctx: *mut c_void,
+    callback: WispersQuicStreamCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
 
-    verifying_key
-        .verify(&message_to_verify, &sig)
-        .map_err(|_| WispersStatus::ConnectionFailed)?;
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
 
-    // Extract peer's X25519 public key
-    let peer_x25519_public: [u8; 32] = response
-        .answerer_x25519_public_key
-        .try_into()
-        .map_err(|_| WispersStatus::ConnectionFailed)?;
+    let ctx = CallbackContext(ctx);
+    let conn_ptr = SendableQuicConnPtr(handle);
 
-    // Derive shared secret
-    let shared_secret = x25519_key.diffie_hellman(&peer_x25519_public);
+    runtime::spawn(async move {
+        let conn = unsafe { conn_ptr.get() };
+        let result = conn.open_stream().await;
 
-    // Complete ICE connection with answerer's SDP
-    ice_caller
-        .connect(&response.answerer_sdp)
-        .await
-        .map_err(|_| WispersStatus::ConnectionFailed)?;
+        match result {
+            Ok(stream) => {
+                let h = Box::into_raw(Box::new(WispersQuicStreamHandle(stream)));
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::Success, h);
+                }
+            }
+            Err(_) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+        }
+    });
 
-    UdpConnection::new_caller(peer_node_number, response.connection_id, ice_caller, shared_secret)
-        .map_err(|_| WispersStatus::ConnectionFailed)
+    WispersStatus::Success
+}
+
+/// Accept an incoming stream from the peer.
+///
+/// The connection handle is NOT consumed.
+/// On success, callback receives the stream handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_quic_connection_accept_stream_async(
+    handle: *mut WispersQuicConnectionHandle,
+    ctx: *mut c_void,
+    callback: WispersQuicStreamCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    let ctx = CallbackContext(ctx);
+    let conn_ptr = SendableQuicConnPtr(handle);
+
+    runtime::spawn(async move {
+        let conn = unsafe { conn_ptr.get() };
+        let result = conn.accept_stream().await;
+
+        match result {
+            Ok(stream) => {
+                let h = Box::into_raw(Box::new(WispersQuicStreamHandle(stream)));
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::Success, h);
+                }
+            }
+            Err(_) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null_mut());
+                }
+            }
+        }
+    });
+
+    WispersStatus::Success
+}
+
+/// Close a QUIC connection.
+///
+/// The connection handle is CONSUMED by this call.
+/// The callback is invoked when the close operation completes.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_quic_connection_close_async(
+    handle: *mut WispersQuicConnectionHandle,
+    ctx: *mut c_void,
+    callback: super::callbacks::WispersCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    let ctx = CallbackContext(ctx);
+    let conn = unsafe { Box::from_raw(handle) };
+
+    runtime::spawn(async move {
+        let result = conn.0.close().await;
+
+        match result {
+            Ok(()) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::Success);
+                }
+            }
+            Err(_) => {
+                unsafe {
+                    callback(ctx.ptr(), WispersStatus::ConnectionFailed);
+                }
+            }
+        }
+    });
+
+    WispersStatus::Success
 }

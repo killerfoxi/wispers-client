@@ -41,9 +41,13 @@ pub use serving::{
     WispersStartServingCallback,
 };
 pub use p2p::{
-    wispers_activated_node_connect_udp_async, wispers_udp_connection_close,
-    wispers_udp_connection_free, wispers_udp_connection_recv_async, wispers_udp_connection_send,
-    WispersDataCallback, WispersUdpConnectionCallback, WispersUdpConnectionHandle,
+    wispers_activated_node_connect_quic_async, wispers_activated_node_connect_udp_async,
+    wispers_quic_connection_accept_stream_async, wispers_quic_connection_close_async,
+    wispers_quic_connection_free, wispers_quic_connection_open_stream_async,
+    wispers_quic_stream_free, wispers_udp_connection_close, wispers_udp_connection_free,
+    wispers_udp_connection_recv_async, wispers_udp_connection_send, WispersDataCallback,
+    WispersQuicConnectionCallback, WispersQuicConnectionHandle, WispersQuicStreamCallback,
+    WispersQuicStreamHandle, WispersUdpConnectionCallback, WispersUdpConnectionHandle,
 };
 
 pub use crate::storage::foreign::WispersNodeStorageCallbacks;

@@ -43,6 +43,8 @@ typedef struct WispersServingHandle WispersServingHandle;
 typedef struct WispersServingSession WispersServingSession;
 typedef struct WispersIncomingConnections WispersIncomingConnections;
 typedef struct WispersUdpConnectionHandle WispersUdpConnectionHandle;
+typedef struct WispersQuicConnectionHandle WispersQuicConnectionHandle;
+typedef struct WispersQuicStreamHandle WispersQuicStreamHandle;
 
 // Host-provided storage callbacks. All functions must be non-null when used.
 // The ctx pointer carries all context the host needs, including any namespace
@@ -154,6 +156,20 @@ typedef void (*WispersDataCallback)(
     WispersStatus status,
     const uint8_t *data,
     size_t len
+);
+
+// Callback that receives a QUIC connection handle.
+typedef void (*WispersQuicConnectionCallback)(
+    void *ctx,
+    WispersStatus status,
+    WispersQuicConnectionHandle *connection
+);
+
+// Callback that receives a QUIC stream handle.
+typedef void (*WispersQuicStreamCallback)(
+    void *ctx,
+    WispersStatus status,
+    WispersQuicStreamHandle *stream
 );
 
 //------------------------------------------------------------------------------
@@ -342,7 +358,58 @@ void wispers_udp_connection_close(WispersUdpConnectionHandle *handle);
 // Free a UDP connection handle (if not already closed).
 void wispers_udp_connection_free(WispersUdpConnectionHandle *handle);
 
-// TODO: wispers_activated_node_connect_quic_async - Phase 8b
+//------------------------------------------------------------------------------
+// P2P QUIC Connections
+//------------------------------------------------------------------------------
+
+// Connect to a peer node using QUIC transport.
+// The activated handle is NOT consumed.
+// On success, callback receives the QUIC connection handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_activated_node_connect_quic_async(
+    WispersActivatedNodeHandle *handle,
+    int32_t peer_node_number,
+    void *ctx,
+    WispersQuicConnectionCallback callback
+);
+
+// Open a new bidirectional stream on a QUIC connection.
+// The connection handle is NOT consumed.
+// On success, callback receives the stream handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_quic_connection_open_stream_async(
+    WispersQuicConnectionHandle *handle,
+    void *ctx,
+    WispersQuicStreamCallback callback
+);
+
+// Accept an incoming stream from the peer.
+// The connection handle is NOT consumed.
+// On success, callback receives the stream handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_quic_connection_accept_stream_async(
+    WispersQuicConnectionHandle *handle,
+    void *ctx,
+    WispersQuicStreamCallback callback
+);
+
+// Close a QUIC connection.
+// The connection handle is CONSUMED by this call.
+// Callback is invoked when the close operation completes.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_quic_connection_close_async(
+    WispersQuicConnectionHandle *handle,
+    void *ctx,
+    WispersCallback callback
+);
+
+// Free a QUIC connection handle (if not already closed).
+void wispers_quic_connection_free(WispersQuicConnectionHandle *handle);
+
+// Free a QUIC stream handle.
+void wispers_quic_stream_free(WispersQuicStreamHandle *stream);
+
+// TODO: QUIC stream operations (read, write, finish, shutdown) - Phase 8c
 
 //------------------------------------------------------------------------------
 // Serving

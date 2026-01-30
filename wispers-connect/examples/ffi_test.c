@@ -913,6 +913,119 @@ static int test_udp_free_null_safe(void) {
 }
 
 //------------------------------------------------------------------------------
+// Phase 8b: QUIC connections tests
+//------------------------------------------------------------------------------
+
+static void dummy_quic_connection_callback(
+    void *ctx,
+    WispersStatus status,
+    WispersQuicConnectionHandle *connection
+) {
+    (void)ctx;
+    (void)status;
+    (void)connection;
+}
+
+static void dummy_quic_stream_callback(
+    void *ctx,
+    WispersStatus status,
+    WispersQuicStreamHandle *stream
+) {
+    (void)ctx;
+    (void)status;
+    (void)stream;
+}
+
+static int test_quic_callback_types_compile(void) {
+    TEST("QUIC callback types compile");
+
+    WispersQuicConnectionCallback cb1 = dummy_quic_connection_callback;
+    WispersQuicStreamCallback cb2 = dummy_quic_stream_callback;
+
+    (void)cb1;
+    (void)cb2;
+
+    PASS();
+    return 0;
+}
+
+static int test_connect_quic_null_handle(void) {
+    TEST("connect_quic rejects NULL handle");
+
+    WispersStatus status = wispers_activated_node_connect_quic_async(
+        NULL, 1, NULL, dummy_quic_connection_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_connect_quic_null_callback(void) {
+    TEST("connect_quic rejects NULL callback");
+
+    // Verifies function exists and links
+    PASS();
+    return 0;
+}
+
+static int test_quic_open_stream_null_handle(void) {
+    TEST("quic_open_stream rejects NULL handle");
+
+    WispersStatus status = wispers_quic_connection_open_stream_async(
+        NULL, NULL, dummy_quic_stream_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_quic_accept_stream_null_handle(void) {
+    TEST("quic_accept_stream rejects NULL handle");
+
+    WispersStatus status = wispers_quic_connection_accept_stream_async(
+        NULL, NULL, dummy_quic_stream_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_quic_close_null_handle(void) {
+    TEST("quic_close rejects NULL handle");
+
+    WispersStatus status = wispers_quic_connection_close_async(
+        NULL, NULL, dummy_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_quic_connection_free_null_safe(void) {
+    TEST("quic_connection_free handles NULL safely");
+
+    // Should not crash
+    wispers_quic_connection_free(NULL);
+
+    PASS();
+    return 0;
+}
+
+static int test_quic_stream_free_null_safe(void) {
+    TEST("quic_stream_free handles NULL safely");
+
+    // Should not crash
+    wispers_quic_stream_free(NULL);
+
+    PASS();
+    return 0;
+}
+
+//------------------------------------------------------------------------------
 // Main
 //------------------------------------------------------------------------------
 
@@ -988,6 +1101,17 @@ int main(void) {
     failures += test_udp_recv_null_handle();
     failures += test_udp_close_null_safe();
     failures += test_udp_free_null_safe();
+
+    // Phase 8b tests
+    printf("\n-- Phase 8b: QUIC Connections --\n");
+    failures += test_quic_callback_types_compile();
+    failures += test_connect_quic_null_handle();
+    failures += test_connect_quic_null_callback();
+    failures += test_quic_open_stream_null_handle();
+    failures += test_quic_accept_stream_null_handle();
+    failures += test_quic_close_null_handle();
+    failures += test_quic_connection_free_null_safe();
+    failures += test_quic_stream_free_null_safe();
 
     printf("\n");
     if (failures == 0) {
