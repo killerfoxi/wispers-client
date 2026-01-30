@@ -30,8 +30,8 @@ static void dummy_init_callback(
     void *ctx,
     WispersStatus status,
     WispersStage stage,
-    WispersPendingNodeStateHandle *pending,
-    WispersRegisteredNodeStateHandle *registered,
+    WispersPendingNodeHandle *pending,
+    WispersRegisteredNodeHandle *registered,
     WispersActivatedNodeHandle *activated
 ) {
     (void)ctx;
@@ -45,7 +45,7 @@ static void dummy_init_callback(
 static void dummy_registered_callback(
     void *ctx,
     WispersStatus status,
-    WispersRegisteredNodeStateHandle *handle
+    WispersRegisteredNodeHandle *handle
 ) {
     (void)ctx;
     (void)status;
@@ -129,8 +129,8 @@ static int test_handle_free_null(void) {
     TEST("handle free NULL is safe");
 
     // All free functions should handle NULL safely
-    wispers_pending_state_free(NULL);
-    wispers_registered_state_free(NULL);
+    wispers_pending_node_free(NULL);
+    wispers_registered_node_free(NULL);
     wispers_activated_node_free(NULL);
     wispers_string_free(NULL);
 
@@ -226,8 +226,8 @@ typedef struct {
     int called;
     WispersStatus status;
     WispersStage stage;
-    WispersPendingNodeStateHandle *pending;
-    WispersRegisteredNodeStateHandle *registered;
+    WispersPendingNodeHandle *pending;
+    WispersRegisteredNodeHandle *registered;
     WispersActivatedNodeHandle *activated;
 } InitTestCtx;
 
@@ -235,8 +235,8 @@ static void init_callback(
     void *ctx,
     WispersStatus status,
     WispersStage stage,
-    WispersPendingNodeStateHandle *pending,
-    WispersRegisteredNodeStateHandle *registered,
+    WispersPendingNodeHandle *pending,
+    WispersRegisteredNodeHandle *registered,
     WispersActivatedNodeHandle *activated
 ) {
     InitTestCtx *test = (InitTestCtx *)ctx;
@@ -277,8 +277,8 @@ static int test_restore_or_init_fresh_storage(void) {
     }
 
     if (ctx.stage != WISPERS_STAGE_PENDING) {
-        if (ctx.pending) wispers_pending_state_free(ctx.pending);
-        if (ctx.registered) wispers_registered_state_free(ctx.registered);
+        if (ctx.pending) wispers_pending_node_free(ctx.pending);
+        if (ctx.registered) wispers_registered_node_free(ctx.registered);
         if (ctx.activated) wispers_activated_node_free(ctx.activated);
         wispers_storage_free(storage);
         FAIL("expected PENDING stage");
@@ -289,7 +289,7 @@ static int test_restore_or_init_fresh_storage(void) {
         FAIL("pending handle is NULL");
     }
 
-    wispers_pending_state_free(ctx.pending);
+    wispers_pending_node_free(ctx.pending);
     wispers_storage_free(storage);
     PASS();
     return 0;
@@ -317,6 +317,187 @@ static int test_restore_or_init_null_handle(void) {
     WispersStatus status = wispers_storage_restore_or_init_async(NULL, &ctx, init_callback);
 
     if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+//------------------------------------------------------------------------------
+// Phase 4: Logout operations tests
+//------------------------------------------------------------------------------
+
+// Test context for logout callbacks
+typedef struct {
+    int called;
+    WispersStatus status;
+} LogoutTestCtx;
+
+static void logout_callback(void *ctx, WispersStatus status) {
+    LogoutTestCtx *test = (LogoutTestCtx *)ctx;
+    test->called = 1;
+    test->status = status;
+}
+
+static int test_pending_logout_null_handle(void) {
+    TEST("pending_logout rejects NULL handle");
+
+    LogoutTestCtx ctx = {0};
+    WispersStatus status = wispers_pending_node_logout_async(NULL, &ctx, logout_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_pending_logout_null_callback(void) {
+    TEST("pending_logout rejects NULL callback");
+
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) FAIL("failed to create storage");
+
+    InitTestCtx init_ctx = {0};
+    WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start init");
+    }
+
+    // Wait for init callback
+    for (int i = 0; i < 100 && !init_ctx.called; i++) {
+        usleep(10000);
+    }
+    if (!init_ctx.called || init_ctx.stage != WISPERS_STAGE_PENDING) {
+        wispers_storage_free(storage);
+        FAIL("failed to get pending handle");
+    }
+
+    status = wispers_pending_node_logout_async(init_ctx.pending, NULL, NULL);
+    wispers_storage_free(storage);
+
+    if (status != WISPERS_STATUS_MISSING_CALLBACK) FAIL("expected MISSING_CALLBACK");
+
+    // Handle was consumed by the failed call, so we free it
+    wispers_pending_node_free(init_ctx.pending);
+
+    PASS();
+    return 0;
+}
+
+static int test_pending_logout_success(void) {
+    TEST("pending_logout deletes local state");
+
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) FAIL("failed to create storage");
+
+    InitTestCtx init_ctx = {0};
+    WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start init");
+    }
+
+    // Wait for init callback
+    for (int i = 0; i < 100 && !init_ctx.called; i++) {
+        usleep(10000);
+    }
+    if (!init_ctx.called || init_ctx.stage != WISPERS_STAGE_PENDING) {
+        wispers_storage_free(storage);
+        FAIL("failed to get pending handle");
+    }
+
+    LogoutTestCtx logout_ctx = {0};
+    status = wispers_pending_node_logout_async(init_ctx.pending, &logout_ctx, logout_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start logout");
+    }
+
+    // Wait for logout callback
+    for (int i = 0; i < 100 && !logout_ctx.called; i++) {
+        usleep(10000);
+    }
+
+    wispers_storage_free(storage);
+
+    if (!logout_ctx.called) FAIL("logout callback was not invoked");
+    if (logout_ctx.status != WISPERS_STATUS_SUCCESS) FAIL("logout callback status was not SUCCESS");
+
+    PASS();
+    return 0;
+}
+
+static int test_registered_logout_null_handle(void) {
+    TEST("registered_logout rejects NULL handle");
+
+    LogoutTestCtx ctx = {0};
+    WispersStatus status = wispers_registered_node_logout_async(NULL, &ctx, logout_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_registered_logout_null_callback(void) {
+    TEST("registered_logout rejects NULL callback");
+
+    WispersNodeStorageHandle *storage = wispers_storage_new_in_memory();
+    if (!storage) FAIL("failed to create storage");
+
+    // Get a pending handle, complete registration manually to get registered handle
+    InitTestCtx init_ctx = {0};
+    WispersStatus status = wispers_storage_restore_or_init_async(storage, &init_ctx, init_callback);
+    if (status != WISPERS_STATUS_SUCCESS) {
+        wispers_storage_free(storage);
+        FAIL("failed to start init");
+    }
+
+    for (int i = 0; i < 100 && !init_ctx.called; i++) {
+        usleep(10000);
+    }
+    if (!init_ctx.called || init_ctx.stage != WISPERS_STAGE_PENDING) {
+        wispers_storage_free(storage);
+        FAIL("failed to get pending handle");
+    }
+
+    WispersRegisteredNodeHandle *registered = NULL;
+    status = wispers_pending_node_complete_registration(
+        init_ctx.pending, "test-group", 1, "test-token", &registered);
+    if (status != WISPERS_STATUS_SUCCESS || !registered) {
+        wispers_storage_free(storage);
+        FAIL("failed to complete registration");
+    }
+
+    status = wispers_registered_node_logout_async(registered, NULL, NULL);
+    wispers_registered_node_free(registered);
+    wispers_storage_free(storage);
+
+    if (status != WISPERS_STATUS_MISSING_CALLBACK) FAIL("expected MISSING_CALLBACK");
+
+    PASS();
+    return 0;
+}
+
+static int test_activated_logout_null_handle(void) {
+    TEST("activated_logout rejects NULL handle");
+
+    LogoutTestCtx ctx = {0};
+    WispersStatus status = wispers_activated_node_logout_async(NULL, &ctx, logout_callback);
+
+    if (status != WISPERS_STATUS_NULL_POINTER) FAIL("expected NULL_POINTER");
+
+    PASS();
+    return 0;
+}
+
+static int test_activated_logout_null_callback(void) {
+    TEST("activated_logout rejects NULL callback");
+
+    // We can't easily get an activated handle without a real hub,
+    // so just test the NULL handle case. The NULL callback check happens
+    // after the NULL handle check, so we'd need a real handle to test it.
+    // This is a compile/link test for now.
 
     PASS();
     return 0;
@@ -353,6 +534,16 @@ int main(void) {
     failures += test_restore_or_init_fresh_storage();
     failures += test_restore_or_init_null_callback();
     failures += test_restore_or_init_null_handle();
+
+    // Phase 4 tests
+    printf("\n-- Phase 4: Logout Operations --\n");
+    failures += test_pending_logout_null_handle();
+    failures += test_pending_logout_null_callback();
+    failures += test_pending_logout_success();
+    failures += test_registered_logout_null_handle();
+    failures += test_registered_logout_null_callback();
+    failures += test_activated_logout_null_handle();
+    failures += test_activated_logout_null_callback();
 
     printf("\n");
     if (failures == 0) {

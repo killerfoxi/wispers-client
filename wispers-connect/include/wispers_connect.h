@@ -36,8 +36,8 @@ typedef enum {
 
 // Forward declarations for opaque handles.
 typedef struct WispersNodeStorageHandle WispersNodeStorageHandle;
-typedef struct WispersPendingNodeStateHandle WispersPendingNodeStateHandle;
-typedef struct WispersRegisteredNodeStateHandle WispersRegisteredNodeStateHandle;
+typedef struct WispersPendingNodeHandle WispersPendingNodeHandle;
+typedef struct WispersRegisteredNodeHandle WispersRegisteredNodeHandle;
 typedef struct WispersActivatedNodeHandle WispersActivatedNodeHandle;
 
 // Host-provided storage callbacks. All functions must be non-null when used.
@@ -68,8 +68,8 @@ typedef void (*WispersInitCallback)(
     void *ctx,
     WispersStatus status,
     WispersStage stage,
-    WispersPendingNodeStateHandle *pending,
-    WispersRegisteredNodeStateHandle *registered,
+    WispersPendingNodeHandle *pending,
+    WispersRegisteredNodeHandle *registered,
     WispersActivatedNodeHandle *activated
 );
 
@@ -77,7 +77,7 @@ typedef void (*WispersInitCallback)(
 typedef void (*WispersRegisteredCallback)(
     void *ctx,
     WispersStatus status,
-    WispersRegisteredNodeStateHandle *handle
+    WispersRegisteredNodeHandle *handle
 );
 
 // Callback that receives an activated node handle.
@@ -137,39 +137,55 @@ WispersStatus wispers_storage_restore_or_init_async(
 // Pending state
 //------------------------------------------------------------------------------
 
-void wispers_pending_state_free(WispersPendingNodeStateHandle *handle);
+void wispers_pending_node_free(WispersPendingNodeHandle *handle);
+
+// Logout a pending node (delete local state).
+// The pending handle is CONSUMED and must not be used afterward.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_pending_node_logout_async(
+    WispersPendingNodeHandle *handle,
+    void *ctx,
+    WispersCallback callback
+);
 
 // Manual registration completion (for testing or when registration was done out-of-band).
-WispersStatus wispers_pending_state_complete_registration(
-    WispersPendingNodeStateHandle *handle,
+WispersStatus wispers_pending_node_complete_registration(
+    WispersPendingNodeHandle *handle,
     const char *connectivity_group_id,
     int node_number,
     const char *auth_token,
-    WispersRegisteredNodeStateHandle **out_registered
+    WispersRegisteredNodeHandle **out_registered
 );
 
 // Register the pending node with the hub using a registration token.
 // On success, callback receives the registered state handle.
 // The pending handle is CONSUMED and must not be used afterward.
 // Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_pending_state_register_async(
-    WispersPendingNodeStateHandle *handle,
+WispersStatus wispers_pending_node_register_async(
+    WispersPendingNodeHandle *handle,
     const char *token,
     void *ctx,
     WispersRegisteredCallback callback
 );
 
-// TODO: wispers_pending_state_logout_async - Phase 4
 
 //------------------------------------------------------------------------------
 // Registered state
 //------------------------------------------------------------------------------
 
-void wispers_registered_state_free(WispersRegisteredNodeStateHandle *handle);
+void wispers_registered_node_free(WispersRegisteredNodeHandle *handle);
 
-// TODO: wispers_registered_state_logout_async - Phase 4
-// TODO: wispers_registered_state_activate_async - Phase 5
-// TODO: wispers_registered_state_list_nodes_async - Phase 6
+// Logout a registered node (deregister from hub, then delete local state).
+// The registered handle is CONSUMED and must not be used afterward.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_registered_node_logout_async(
+    WispersRegisteredNodeHandle *handle,
+    void *ctx,
+    WispersCallback callback
+);
+
+// TODO: wispers_registered_node_activate_async - Phase 5
+// TODO: wispers_registered_node_list_nodes_async - Phase 6
 
 //------------------------------------------------------------------------------
 // Activated node
@@ -177,8 +193,15 @@ void wispers_registered_state_free(WispersRegisteredNodeStateHandle *handle);
 
 void wispers_activated_node_free(WispersActivatedNodeHandle *handle);
 
-// TODO: wispers_activated_node_logout_async - Phase 4
-// TODO: wispers_activated_node_list_nodes_async - Phase 6
+// Logout an activated node (self-revoke from roster, deregister from hub, delete local state).
+// The activated handle is CONSUMED and must not be used afterward.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_activated_node_logout_async(
+    WispersActivatedNodeHandle *handle,
+    void *ctx,
+    WispersCallback callback
+);
+
 // TODO: wispers_activated_node_connect_udp_async - Phase 8
 // TODO: wispers_activated_node_connect_quic_async - Phase 8
 

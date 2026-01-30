@@ -37,8 +37,8 @@ pub type WispersInitCallback = Option<
         ctx: *mut c_void,
         status: WispersStatus,
         stage: WispersStage,
-        pending: *mut super::handles::WispersPendingNodeStateHandle,
-        registered: *mut super::handles::WispersRegisteredNodeStateHandle,
+        pending: *mut super::handles::WispersPendingNodeHandle,
+        registered: *mut super::handles::WispersRegisteredNodeHandle,
         activated: *mut super::handles::WispersActivatedNodeHandle,
     ),
 >;
@@ -48,7 +48,7 @@ pub type WispersRegisteredCallback = Option<
     unsafe extern "C" fn(
         ctx: *mut c_void,
         status: WispersStatus,
-        handle: *mut super::handles::WispersRegisteredNodeStateHandle,
+        handle: *mut super::handles::WispersRegisteredNodeHandle,
     ),
 >;
 

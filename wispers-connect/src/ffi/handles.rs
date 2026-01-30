@@ -25,8 +25,8 @@ pub enum ActivatedImpl {
 }
 
 pub struct WispersNodeStorageHandle(pub ManagerImpl);
-pub struct WispersPendingNodeStateHandle(pub PendingImpl);
-pub struct WispersRegisteredNodeStateHandle(pub RegisteredImpl);
+pub struct WispersPendingNodeHandle(pub PendingImpl);
+pub struct WispersRegisteredNodeHandle(pub RegisteredImpl);
 pub struct WispersActivatedNodeHandle(pub ActivatedImpl);
 
 impl From<NodeStateError<InMemoryStoreError>> for WispersStatus {

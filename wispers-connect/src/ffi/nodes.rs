@@ -1,7 +1,7 @@
 use super::callbacks::{CallbackContext, WispersRegisteredCallback};
 use super::handles::{
-    PendingImpl, RegisteredImpl, WispersActivatedNodeHandle, WispersPendingNodeStateHandle,
-    WispersRegisteredNodeStateHandle, complete_registration_internal,
+    PendingImpl, RegisteredImpl, WispersActivatedNodeHandle, WispersPendingNodeHandle,
+    WispersRegisteredNodeHandle, complete_registration_internal,
 };
 use super::helpers::{c_str_to_string, reset_out_ptr};
 use super::runtime;
@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use std::os::raw::{c_char, c_int};
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_pending_state_free(handle: *mut WispersPendingNodeStateHandle) {
+pub extern "C" fn wispers_pending_node_free(handle: *mut WispersPendingNodeHandle) {
     if handle.is_null() {
         return;
     }
@@ -21,7 +21,7 @@ pub extern "C" fn wispers_pending_state_free(handle: *mut WispersPendingNodeStat
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_registered_state_free(handle: *mut WispersRegisteredNodeStateHandle) {
+pub extern "C" fn wispers_registered_node_free(handle: *mut WispersRegisteredNodeHandle) {
     if handle.is_null() {
         return;
     }
@@ -41,12 +41,12 @@ pub extern "C" fn wispers_activated_node_free(handle: *mut WispersActivatedNodeH
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_pending_state_complete_registration(
-    handle: *mut WispersPendingNodeStateHandle,
+pub extern "C" fn wispers_pending_node_complete_registration(
+    handle: *mut WispersPendingNodeHandle,
     connectivity_group_id: *const c_char,
     node_number: c_int,
     auth_token: *const c_char,
-    out_registered: *mut *mut WispersRegisteredNodeStateHandle,
+    out_registered: *mut *mut WispersRegisteredNodeHandle,
 ) -> WispersStatus {
     if handle.is_null() || out_registered.is_null() {
         return WispersStatus::NullPointer;
@@ -74,7 +74,7 @@ pub extern "C" fn wispers_pending_state_complete_registration(
 
     match complete_registration_internal(wrapper.0, registration) {
         Ok(registered) => {
-            let boxed = Box::new(WispersRegisteredNodeStateHandle(registered));
+            let boxed = Box::new(WispersRegisteredNodeHandle(registered));
             unsafe {
                 *out_registered = Box::into_raw(boxed);
             }
@@ -89,8 +89,8 @@ pub extern "C" fn wispers_pending_state_complete_registration(
 /// On success, the callback receives the registered state handle.
 /// The pending handle is CONSUMED by this call and must not be used afterward.
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_pending_state_register_async(
-    handle: *mut WispersPendingNodeStateHandle,
+pub extern "C" fn wispers_pending_node_register_async(
+    handle: *mut WispersPendingNodeHandle,
     token: *const c_char,
     ctx: *mut c_void,
     callback: WispersRegisteredCallback,
@@ -119,7 +119,7 @@ pub extern "C" fn wispers_pending_state_register_async(
                 let result = pending.register(&token_str).await;
                 match result {
                     Ok(registered) => {
-                        let h = Box::into_raw(Box::new(WispersRegisteredNodeStateHandle(
+                        let h = Box::into_raw(Box::new(WispersRegisteredNodeHandle(
                             RegisteredImpl::InMemory(registered),
                         )));
                         unsafe {
@@ -140,7 +140,7 @@ pub extern "C" fn wispers_pending_state_register_async(
                 let result = pending.register(&token_str).await;
                 match result {
                     Ok(registered) => {
-                        let h = Box::into_raw(Box::new(WispersRegisteredNodeStateHandle(
+                        let h = Box::into_raw(Box::new(WispersRegisteredNodeHandle(
                             RegisteredImpl::Foreign(registered),
                         )));
                         unsafe {
@@ -195,4 +195,160 @@ fn map_error_foreign(
     }
 }
 
-// TODO: wispers_registered_state_logout_async - Phase 4
+/// Logout a pending node (delete local state).
+///
+/// The pending handle is CONSUMED by this call and must not be used afterward.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_pending_node_logout_async(
+    handle: *mut WispersPendingNodeHandle,
+    ctx: *mut c_void,
+    callback: super::callbacks::WispersCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    // Consume the handle
+    let wrapper = unsafe { Box::from_raw(handle) };
+    let ctx = CallbackContext(ctx);
+
+    match wrapper.0 {
+        PendingImpl::InMemory(pending) => {
+            runtime::spawn(async move {
+                let result = pending.logout().await;
+                let status = match result {
+                    Ok(()) => WispersStatus::Success,
+                    Err(e) => map_error_in_memory(&e),
+                };
+                unsafe {
+                    callback(ctx.ptr(), status);
+                }
+            });
+        }
+        PendingImpl::Foreign(pending) => {
+            runtime::spawn(async move {
+                let result = pending.logout().await;
+                let status = match result {
+                    Ok(()) => WispersStatus::Success,
+                    Err(e) => map_error_foreign(&e),
+                };
+                unsafe {
+                    callback(ctx.ptr(), status);
+                }
+            });
+        }
+    }
+
+    WispersStatus::Success
+}
+
+/// Logout a registered node (deregister from hub, then delete local state).
+///
+/// The registered handle is CONSUMED by this call and must not be used afterward.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_registered_node_logout_async(
+    handle: *mut WispersRegisteredNodeHandle,
+    ctx: *mut c_void,
+    callback: super::callbacks::WispersCallback,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    // Consume the handle
+    let wrapper = unsafe { Box::from_raw(handle) };
+    let ctx = CallbackContext(ctx);
+
+    match wrapper.0 {
+        RegisteredImpl::InMemory(registered) => {
+            runtime::spawn(async move {
+                let result = registered.logout().await;
+                let status = match result {
+                    Ok(()) => WispersStatus::Success,
+                    Err(e) => map_error_in_memory(&e),
+                };
+                unsafe {
+                    callback(ctx.ptr(), status);
+                }
+            });
+        }
+        RegisteredImpl::Foreign(registered) => {
+            runtime::spawn(async move {
+                let result = registered.logout().await;
+                let status = match result {
+                    Ok(()) => WispersStatus::Success,
+                    Err(e) => map_error_foreign(&e),
+                };
+                unsafe {
+                    callback(ctx.ptr(), status);
+                }
+            });
+        }
+    }
+
+    WispersStatus::Success
+}
+
+/// Logout an activated node (self-revoke from roster, deregister from hub, delete local state).
+///
+/// The activated handle is CONSUMED by this call and must not be used afterward.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_activated_node_logout_async(
+    handle: *mut WispersActivatedNodeHandle,
+    ctx: *mut c_void,
+    callback: super::callbacks::WispersCallback,
+) -> WispersStatus {
+    use super::handles::ActivatedImpl;
+
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let callback = match callback {
+        Some(cb) => cb,
+        None => return WispersStatus::MissingCallback,
+    };
+
+    // Consume the handle
+    let wrapper = unsafe { Box::from_raw(handle) };
+    let ctx = CallbackContext(ctx);
+
+    match wrapper.0 {
+        ActivatedImpl::InMemory(activated) => {
+            runtime::spawn(async move {
+                let result = activated.logout().await;
+                let status = match result {
+                    Ok(()) => WispersStatus::Success,
+                    Err(e) => map_error_in_memory(&e),
+                };
+                unsafe {
+                    callback(ctx.ptr(), status);
+                }
+            });
+        }
+        ActivatedImpl::Foreign(activated) => {
+            runtime::spawn(async move {
+                let result = activated.logout().await;
+                let status = match result {
+                    Ok(()) => WispersStatus::Success,
+                    Err(e) => map_error_foreign(&e),
+                };
+                unsafe {
+                    callback(ctx.ptr(), status);
+                }
+            });
+        }
+    }
+
+    WispersStatus::Success
+}

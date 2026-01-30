@@ -1,7 +1,7 @@
 use super::callbacks::{CallbackContext, WispersInitCallback, WispersStage};
 use super::handles::{
     ActivatedImpl, ManagerImpl, PendingImpl, RegisteredImpl, WispersActivatedNodeHandle,
-    WispersNodeStorageHandle, WispersPendingNodeStateHandle, WispersRegisteredNodeStateHandle,
+    WispersNodeStorageHandle, WispersPendingNodeHandle, WispersRegisteredNodeHandle,
 };
 use super::helpers::{c_str_to_string, WispersRegistrationInfo};
 use super::runtime;
@@ -142,13 +142,13 @@ pub extern "C" fn wispers_storage_restore_or_init_async(
                     Ok(stage) => {
                         let (stage_enum, pending, registered, activated) = match stage {
                             NodeStateStage::Pending(p) => {
-                                let h = Box::into_raw(Box::new(WispersPendingNodeStateHandle(
+                                let h = Box::into_raw(Box::new(WispersPendingNodeHandle(
                                     PendingImpl::InMemory(p),
                                 )));
                                 (WispersStage::Pending, h, std::ptr::null_mut(), std::ptr::null_mut())
                             }
                             NodeStateStage::Registered(r) => {
-                                let h = Box::into_raw(Box::new(WispersRegisteredNodeStateHandle(
+                                let h = Box::into_raw(Box::new(WispersRegisteredNodeHandle(
                                     RegisteredImpl::InMemory(r),
                                 )));
                                 (WispersStage::Registered, std::ptr::null_mut(), h, std::ptr::null_mut())
@@ -188,13 +188,13 @@ pub extern "C" fn wispers_storage_restore_or_init_async(
                     Ok(stage) => {
                         let (stage_enum, pending, registered, activated) = match stage {
                             NodeStateStage::Pending(p) => {
-                                let h = Box::into_raw(Box::new(WispersPendingNodeStateHandle(
+                                let h = Box::into_raw(Box::new(WispersPendingNodeHandle(
                                     PendingImpl::Foreign(p),
                                 )));
                                 (WispersStage::Pending, h, std::ptr::null_mut(), std::ptr::null_mut())
                             }
                             NodeStateStage::Registered(r) => {
-                                let h = Box::into_raw(Box::new(WispersRegisteredNodeStateHandle(
+                                let h = Box::into_raw(Box::new(WispersRegisteredNodeHandle(
                                     RegisteredImpl::Foreign(r),
                                 )));
                                 (WispersStage::Registered, std::ptr::null_mut(), h, std::ptr::null_mut())

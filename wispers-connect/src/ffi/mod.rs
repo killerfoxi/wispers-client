@@ -10,8 +10,8 @@ pub use callbacks::{
     WispersStage,
 };
 pub use handles::{
-    WispersActivatedNodeHandle, WispersNodeStorageHandle, WispersPendingNodeStateHandle,
-    WispersRegisteredNodeStateHandle,
+    WispersActivatedNodeHandle, WispersNodeStorageHandle, WispersPendingNodeHandle,
+    WispersRegisteredNodeHandle,
 };
 pub use helpers::{wispers_registration_info_free, wispers_string_free, WispersRegistrationInfo};
 pub use manager::{
@@ -20,8 +20,10 @@ pub use manager::{
     wispers_storage_restore_or_init_async,
 };
 pub use nodes::{
-    wispers_activated_node_free, wispers_pending_state_complete_registration,
-    wispers_pending_state_free, wispers_pending_state_register_async, wispers_registered_state_free,
+    wispers_activated_node_free, wispers_activated_node_logout_async,
+    wispers_pending_node_complete_registration, wispers_pending_node_free,
+    wispers_pending_node_logout_async, wispers_pending_node_register_async,
+    wispers_registered_node_free, wispers_registered_node_logout_async,
 };
 
 pub use crate::storage::foreign::WispersNodeStateStoreCallbacks;
