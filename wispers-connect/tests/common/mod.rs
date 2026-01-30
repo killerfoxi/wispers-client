@@ -17,10 +17,11 @@ use tonic::{Request, Response, Status, Streaming};
 // Use the proto types from the library
 use wispers_connect::hub::proto::{
     hub_server::{Hub, HubServer},
-    roster, serving_request, serving_response, ListNodesRequest, NodeList,
-    NodeRegistration, NodeRegistrationRequest, PairNodesMessage, RosterRequest,
-    ServingRequest, ServingResponse, StartConnectionRequest, StartConnectionResponse,
-    StunTurnConfig, StunTurnConfigRequest, UpdateRosterRequest, UpdateRosterResponse, Welcome,
+    roster, serving_request, serving_response, DeregisterNodeRequest, DeregisterNodeResponse,
+    ListNodesRequest, NodeList, NodeRegistration, NodeRegistrationRequest, PairNodesMessage,
+    RosterRequest, ServingRequest, ServingResponse, StartConnectionRequest,
+    StartConnectionResponse, StunTurnConfig, StunTurnConfigRequest, UpdateRosterRequest,
+    UpdateRosterResponse, Welcome,
 };
 
 /// A pending connection request waiting for the answerer's response.
@@ -122,6 +123,13 @@ impl Hub for FakeHub {
         _request: Request<ListNodesRequest>,
     ) -> Result<Response<NodeList>, Status> {
         Err(Status::unimplemented("not needed for P2P testing"))
+    }
+
+    async fn deregister_node(
+        &self,
+        _request: Request<DeregisterNodeRequest>,
+    ) -> Result<Response<DeregisterNodeResponse>, Status> {
+        Ok(Response::new(DeregisterNodeResponse {}))
     }
 
     async fn get_roster(

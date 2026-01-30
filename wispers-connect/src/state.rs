@@ -277,10 +277,19 @@ impl<S: NodeStateStore> RegisteredNodeState<S> {
             .expect("registration must be present")
     }
 
-    /// Logout: tell hub to remove node, then delete local state.
+    /// Logout: deregister from hub, then delete local state.
     pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        // TODO: tell hub to remove this node from the connectivity group
-        // For now, just delete local state
+        use crate::hub::HubClient;
+
+        let mut client = HubClient::connect(self.hub_addr())
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        client
+            .deregister_node(self.registration())
+            .await
+            .map_err(NodeStateError::hub)?;
+
         self.store.delete().map_err(NodeStateError::store)
     }
 
@@ -529,11 +538,47 @@ impl<S: NodeStateStore> ActivatedNode<S> {
             .map_err(NodeStateError::hub)
     }
 
-    /// Logout: revoke from roster, deregister from connectivity group, delete local state.
+    /// Logout: self-revoke from roster, deregister from hub, delete local state.
     pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        // TODO: submit self-revocation to roster
-        // TODO: tell hub to remove node from connectivity group
-        // For now, just delete local state
+        use crate::hub::HubClient;
+        use crate::hub::proto::roster::revocation;
+        use crate::roster::{compute_roster_hash, create_revocation_roster};
+
+        let hub_addr = self.config.read().unwrap().hub_addr.clone();
+        let mut client = HubClient::connect(&hub_addr)
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        // Step 1: Self-revoke from roster
+        let base_hash = compute_roster_hash(&self.roster);
+        let payload = revocation::Payload {
+            base_version: self.roster.version,
+            base_version_hash: base_hash,
+            new_version: self.roster.version + 1,
+            revoked_node_number: self.registration.node_number,
+            revoker_node_number: self.registration.node_number,
+        };
+        let signature = self.signing_key.sign(&payload.encode_to_vec());
+
+        let new_roster = create_revocation_roster(
+            &self.roster,
+            self.registration.node_number,
+            self.registration.node_number,
+            signature,
+        );
+
+        client
+            .update_roster(&self.registration, new_roster)
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        // Step 2: Deregister from hub
+        client
+            .deregister_node(&self.registration)
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        // Step 3: Delete local state
         self.store.delete().map_err(NodeStateError::store)
     }
 
