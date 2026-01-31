@@ -115,15 +115,15 @@ impl<T: Into<String>> From<T> for ConnectivityGroupId {
 
 /// Snapshot of all persisted node state; mostly kept internal.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeState {
+pub struct PersistedNodeState {
     pub(crate) root_key: RootKey,
     pub(crate) registration: Option<NodeRegistration>,
 }
 
-impl NodeState {
+impl PersistedNodeState {
     /// Creates a new node state with a freshly generated root key.
     pub fn new() -> Self {
-        NodeState {
+        PersistedNodeState {
             root_key: RootKey::generate(),
             registration: None,
         }
@@ -138,7 +138,7 @@ impl NodeState {
     }
 }
 
-impl Default for NodeState {
+impl Default for PersistedNodeState {
     fn default() -> Self {
         Self::new()
     }
@@ -159,14 +159,14 @@ mod tests {
 
     #[test]
     fn new_generates_random_root_key() {
-        let state = NodeState::new();
+        let state = PersistedNodeState::new();
         assert_eq!(state.root_key.as_bytes().len(), ROOT_KEY_LEN);
         assert!(!state.root_key.as_bytes().iter().all(|b| *b == 0));
     }
 
     #[test]
     fn set_registration_marks_state() {
-        let mut state = NodeState::new();
+        let mut state = PersistedNodeState::new();
         let registration = registration_fixture();
         state.set_registration(registration.clone());
         assert!(state.is_registered());

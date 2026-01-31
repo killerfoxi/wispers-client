@@ -1,7 +1,7 @@
 //! File-based storage for node state.
 
 use crate::storage::NodeStateStore;
-use crate::types::{NodeRegistration, NodeState, RootKey, ROOT_KEY_LEN};
+use crate::types::{NodeRegistration, PersistedNodeState, RootKey, ROOT_KEY_LEN};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -72,7 +72,7 @@ impl FileNodeStateStore {
 impl NodeStateStore for FileNodeStateStore {
     type Error = FileStoreError;
 
-    fn load(&self) -> Result<Option<NodeState>, Self::Error> {
+    fn load(&self) -> Result<Option<PersistedNodeState>, Self::Error> {
         let root_key_path = self.root_key_path();
 
         // If root key doesn't exist, state doesn't exist
@@ -97,13 +97,13 @@ impl NodeStateStore for FileNodeStateStore {
             None
         };
 
-        Ok(Some(NodeState {
+        Ok(Some(PersistedNodeState {
             root_key: RootKey::from_bytes(key_array),
             registration,
         }))
     }
 
-    fn save(&self, state: &NodeState) -> Result<(), Self::Error> {
+    fn save(&self, state: &PersistedNodeState) -> Result<(), Self::Error> {
         fs::create_dir_all(&self.dir)?;
 
         // Save root key

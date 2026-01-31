@@ -1,4 +1,4 @@
-use crate::types::NodeState;
+use crate::types::PersistedNodeState;
 use std::sync::Arc;
 
 pub mod file;
@@ -16,9 +16,9 @@ pub use in_memory::{InMemoryNodeStateStore, InMemoryStoreError};
 pub trait NodeStateStore: Send + Sync + 'static {
     type Error;
 
-    fn load(&self) -> Result<Option<NodeState>, Self::Error>;
+    fn load(&self) -> Result<Option<PersistedNodeState>, Self::Error>;
 
-    fn save(&self, state: &NodeState) -> Result<(), Self::Error>;
+    fn save(&self, state: &PersistedNodeState) -> Result<(), Self::Error>;
 
     fn delete(&self) -> Result<(), Self::Error>;
 }

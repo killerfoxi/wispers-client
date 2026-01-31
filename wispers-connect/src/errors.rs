@@ -1,7 +1,7 @@
 use std::fmt;
 
-// Re-export NodeStage from node module for use in error types
-pub use crate::node::NodeStage;
+// Re-export NodeState from node module for use in error types
+pub use crate::node::NodeState;
 
 #[derive(Debug)]
 pub enum NodeStateError<StoreError> {
@@ -13,9 +13,9 @@ pub enum NodeStateError<StoreError> {
     MacVerificationFailed,
     MissingEndorserResponse,
     RosterVerificationFailed(crate::roster::RosterVerificationError),
-    /// Operation requires a different node stage than the current one.
+    /// Operation requires a different node state than the current one.
     InvalidState {
-        current: NodeStage,
+        current: NodeState,
         required: &'static str,
     },
 }

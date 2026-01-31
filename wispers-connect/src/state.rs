@@ -5,7 +5,7 @@ use crate::roster::{
     build_activation_payload, create_activation_roster, create_bootstrap_roster, verify_roster,
 };
 use crate::storage::{NodeStateStore, SharedStore};
-use crate::types::{NodeRegistration, NodeState};
+use crate::types::{NodeRegistration, PersistedNodeState};
 use prost::Message;
 use std::sync::{Arc, RwLock};
 
@@ -14,7 +14,29 @@ const DEFAULT_HUB_ADDR: &str = "https://hub.connect.wispers.dev";
 
 /// Runtime configuration shared across state types (not persisted).
 pub(crate) struct RuntimeConfig {
-    hub_addr: String,
+    pub(crate) hub_addr: String,
+}
+
+impl RuntimeConfig {
+    /// Create a new RuntimeConfig with the default hub address.
+    pub(crate) fn new() -> Self {
+        Self {
+            hub_addr: DEFAULT_HUB_ADDR.to_string(),
+        }
+    }
+
+    /// Create a new RuntimeConfig with a custom hub address.
+    pub(crate) fn new_with_addr(hub_addr: impl Into<String>) -> Self {
+        Self {
+            hub_addr: hub_addr.into(),
+        }
+    }
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub(crate) type SharedConfig = Arc<RwLock<RuntimeConfig>>;
@@ -65,7 +87,7 @@ impl<S: NodeStateStore> NodeStorage<S> {
         let state = match self.store.load().map_err(NodeStateError::store)? {
             Some(state) => state,
             None => {
-                let state = NodeState::new();
+                let state = PersistedNodeState::new();
                 self.store.save(&state).map_err(NodeStateError::store)?;
                 return Ok(NodeStateStage::Pending(PendingNodeState::new(
                     state,
@@ -182,13 +204,13 @@ impl<S: NodeStateStore> NodeStateStage<S> {
 
 /// Pending node state that has not completed remote registration.
 pub struct PendingNodeState<S: NodeStateStore> {
-    state: NodeState,
+    state: PersistedNodeState,
     store: SharedStore<S>,
     config: SharedConfig,
 }
 
 impl<S: NodeStateStore> PendingNodeState<S> {
-    pub(crate) fn new(state: NodeState, store: SharedStore<S>, config: SharedConfig) -> Self {
+    pub(crate) fn new(state: PersistedNodeState, store: SharedStore<S>, config: SharedConfig) -> Self {
         Self { state, store, config }
     }
 
@@ -248,14 +270,14 @@ impl<S: NodeStateStore> PendingNodeState<S> {
 
 /// Registered node state ready for node runtime initialization.
 pub struct RegisteredNodeState<S: NodeStateStore> {
-    state: NodeState,
+    state: PersistedNodeState,
     store: SharedStore<S>,
     config: SharedConfig,
 }
 
 impl<S: NodeStateStore> RegisteredNodeState<S> {
     pub(crate) fn new(
-        state: NodeState,
+        state: PersistedNodeState,
         store: SharedStore<S>,
         config: SharedConfig,
     ) -> Result<Self, NodeStateError<S::Error>> {

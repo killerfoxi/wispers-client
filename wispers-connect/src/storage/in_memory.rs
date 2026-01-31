@@ -1,12 +1,12 @@
 use crate::storage::NodeStateStore;
-use crate::types::NodeState;
+use crate::types::PersistedNodeState;
 use std::sync::RwLock;
 use thiserror::Error;
 
 /// Simple, non-persistent store useful for testing and sketches.
 #[derive(Default)]
 pub struct InMemoryNodeStateStore {
-    state: RwLock<Option<NodeState>>,
+    state: RwLock<Option<PersistedNodeState>>,
 }
 
 impl InMemoryNodeStateStore {
@@ -18,12 +18,12 @@ impl InMemoryNodeStateStore {
 impl NodeStateStore for InMemoryNodeStateStore {
     type Error = InMemoryStoreError;
 
-    fn load(&self) -> Result<Option<NodeState>, Self::Error> {
+    fn load(&self) -> Result<Option<PersistedNodeState>, Self::Error> {
         let state = self.state.read().map_err(|_| InMemoryStoreError::Poisoned)?;
         Ok(state.clone())
     }
 
-    fn save(&self, state: &NodeState) -> Result<(), Self::Error> {
+    fn save(&self, state: &PersistedNodeState) -> Result<(), Self::Error> {
         let mut stored = self.state.write().map_err(|_| InMemoryStoreError::Poisoned)?;
         *stored = Some(state.clone());
         Ok(())

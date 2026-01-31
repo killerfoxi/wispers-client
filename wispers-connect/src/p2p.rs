@@ -76,6 +76,9 @@ pub enum P2pError {
 
     #[error("disconnected")]
     Disconnected,
+
+    #[error("node not activated")]
+    NotActivated,
 }
 
 //-- UDP connections -------------------------------------------------------------------------------

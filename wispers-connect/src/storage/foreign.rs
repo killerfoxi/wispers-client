@@ -1,6 +1,6 @@
 use crate::errors::WispersStatus;
 use crate::storage::NodeStateStore;
-use crate::types::{NodeRegistration, NodeState, RootKey};
+use crate::types::{NodeRegistration, PersistedNodeState, RootKey};
 use bincode;
 use std::ffi::c_void;
 use std::fmt;
@@ -185,20 +185,20 @@ unsafe impl Sync for ForeignNodeStateStore {}
 impl NodeStateStore for ForeignNodeStateStore {
     type Error = ForeignStoreError;
 
-    fn load(&self) -> Result<Option<NodeState>, Self::Error> {
+    fn load(&self) -> Result<Option<PersistedNodeState>, Self::Error> {
         let root_key = match self.call_load_root_key()? {
             Some(bytes) => bytes,
             None => return Ok(None),
         };
 
         let registration = self.call_load_registration()?;
-        Ok(Some(NodeState {
+        Ok(Some(PersistedNodeState {
             root_key: RootKey::from_bytes(root_key),
             registration,
         }))
     }
 
-    fn save(&self, state: &NodeState) -> Result<(), Self::Error> {
+    fn save(&self, state: &PersistedNodeState) -> Result<(), Self::Error> {
         self.call_save_root_key(state.root_key.as_bytes())?;
         self.call_save_registration(state.registration.as_ref())?;
         Ok(())
