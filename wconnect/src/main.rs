@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use wispers_connect::{FileNodeStateStore, NodeStateStage, NodeStorage};
+use wispers_connect::{FileNodeStateStore, Node, NodeState, NodeStorage};
 
 #[derive(Parser)]
 #[command(name = "wconnect")]
@@ -196,39 +196,30 @@ async fn async_main(command: Command, hub_override: Option<String>, profile: Str
 async fn register(hub_override: Option<&str>, profile: &str, token: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
 
-    let stage = storage
-        .restore_or_init_node_state()
+    let mut node = storage
+        .restore_or_init_node()
         .await
         .context("failed to load node state")?;
 
-    let pending = match stage {
-        NodeStateStage::Pending(p) => p,
-        NodeStateStage::Registered(r) => {
-            let reg = r.registration();
+    match node.state() {
+        NodeState::Pending => {}
+        NodeState::Registered | NodeState::Activated => {
+            let reg = node.registration().expect("registered");
             anyhow::bail!(
                 "Already registered as node {} in group {}. Use 'wconnect logout' to clear.",
                 reg.node_number,
                 reg.connectivity_group_id
             );
         }
-        NodeStateStage::Activated(a) => {
-            let reg = a.registration();
-            anyhow::bail!(
-                "Already activated as node {} in group {}. Use 'wconnect logout' to clear.",
-                reg.node_number,
-                reg.connectivity_group_id
-            );
-        }
-    };
+    }
 
     println!("Registering with token {}...", token);
 
-    let registered = pending
-        .register(token)
+    node.register(token)
         .await
         .context("registration failed")?;
 
-    let reg = registered.registration();
+    let reg = node.registration().expect("just registered");
     println!("Registration successful!");
     println!("  Connectivity group: {}", reg.connectivity_group_id);
     println!("  Node number: {}", reg.node_number);
@@ -239,31 +230,31 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
     use wispers_connect::PairingCode;
 
     let storage = get_storage(hub_override, profile)?;
-    let stage = storage
-        .restore_or_init_node_state()
+    let mut node = storage
+        .restore_or_init_node()
         .await
         .context("failed to load node state")?;
 
-    let registered = match stage {
-        NodeStateStage::Pending(_) => {
+    match node.state() {
+        NodeState::Pending => {
             anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
         }
-        NodeStateStage::Registered(r) => r,
-        NodeStateStage::Activated(a) => {
-            let reg = a.registration();
+        NodeState::Registered => {}
+        NodeState::Activated => {
+            let reg = node.registration().expect("activated");
             anyhow::bail!(
                 "Already activated as node {} in group {}.",
                 reg.node_number,
                 reg.connectivity_group_id
             );
         }
-    };
+    }
 
     // Parse pairing code to check for self-endorsement
     let parsed_code = PairingCode::parse(pairing_code)
         .context("invalid pairing code format")?;
 
-    let our_node_number = registered.registration().node_number;
+    let our_node_number = node.registration().expect("registered").node_number;
     if parsed_code.node_number == our_node_number {
         anyhow::bail!(
             "Cannot activate using your own pairing code (self-endorsement). \
@@ -273,16 +264,16 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
 
     println!("Activating with pairing code {}...", pairing_code);
 
-    let activated = registered
-        .activate(pairing_code)
+    node.activate(pairing_code)
         .await
         .context("activation failed")?;
 
-    let reg = activated.registration();
+    let reg = node.registration().expect("activated");
+    let roster = node.roster().expect("activated");
     println!("Activation successful!");
     println!("  Connectivity group: {}", reg.connectivity_group_id);
     println!("  Node number: {}", reg.node_number);
-    println!("  Roster has {} nodes", activated.roster().nodes.len());
+    println!("  Roster has {} nodes", roster.nodes.len());
     Ok(())
 }
 

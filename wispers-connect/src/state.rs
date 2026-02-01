@@ -1,12 +1,9 @@
-use crate::crypto::{generate_nonce, PairingCode, SigningKeyPair, X25519KeyPair};
+use crate::crypto::{SigningKeyPair, X25519KeyPair};
 use crate::errors::NodeStateError;
-use crate::hub::proto;
-use crate::roster::{
-    build_activation_payload, create_activation_roster, create_bootstrap_roster, verify_roster,
-};
+use crate::node::Node;
+use crate::roster::verify_roster;
 use crate::storage::{NodeStateStore, SharedStore};
 use crate::types::{NodeRegistration, PersistedNodeState};
-use prost::Message;
 use std::sync::{Arc, RwLock};
 
 /// Default hub address for production use.
@@ -74,14 +71,14 @@ impl<S: NodeStateStore> NodeStorage<S> {
 
     /// Initialize or restore node state.
     ///
-    /// Returns the current stage:
+    /// Returns a `Node<S>` in the appropriate state:
     /// - `Pending` if not registered
     /// - `Registered` if registered but not in the roster
     /// - `Activated` if registered and in the roster
     ///
     /// This method fetches the roster from the hub when the node is registered
     /// to determine if it has been activated.
-    pub async fn restore_or_init_node_state(&self) -> Result<NodeStateStage<S>, NodeStateError<S::Error>> {
+    pub async fn restore_or_init_node(&self) -> Result<Node<S>, NodeStateError<S::Error>> {
         use crate::hub::HubClient;
 
         let state = match self.store.load().map_err(NodeStateError::store)? {
@@ -89,21 +86,21 @@ impl<S: NodeStateStore> NodeStorage<S> {
             None => {
                 let state = PersistedNodeState::new();
                 self.store.save(&state).map_err(NodeStateError::store)?;
-                return Ok(NodeStateStage::Pending(PendingNodeState::new(
+                return Ok(Node::new_pending(
                     state,
                     self.store.clone(),
                     self.config.clone(),
-                )));
+                ));
             }
         };
 
         // Not registered yet
         if !state.is_registered() {
-            return Ok(NodeStateStage::Pending(PendingNodeState::new(
+            return Ok(Node::new_pending(
                 state,
                 self.store.clone(),
                 self.config.clone(),
-            )));
+            ));
         }
 
         // Registered - fetch roster to check if activated
@@ -129,7 +126,7 @@ impl<S: NodeStateStore> NodeStorage<S> {
         if is_activated {
             let root_key = state.root_key.as_bytes();
             let signing_key = SigningKeyPair::derive_from_root_key(root_key);
-            let x25519_key = X25519KeyPair::derive_from_root_key(root_key);
+            let encryption_key = X25519KeyPair::derive_from_root_key(root_key);
 
             // Verify the roster cryptographically before trusting it
             verify_roster(
@@ -139,837 +136,54 @@ impl<S: NodeStateStore> NodeStorage<S> {
             )
             .map_err(NodeStateError::RosterVerificationFailed)?;
 
-            Ok(NodeStateStage::Activated(ActivatedNode {
-                signing_key,
-                x25519_key,
-                roster,
-                registration: registration.clone(),
-                store: self.store.clone(),
-                config: self.config.clone(),
-            }))
-        } else {
-            Ok(NodeStateStage::Registered(RegisteredNodeState::new(
+            Ok(Node::new_activated(
                 state,
                 self.store.clone(),
                 self.config.clone(),
-            )?))
-        }
-    }
-}
-
-/// State machine representing the node's current stage.
-pub enum NodeStateStage<S: NodeStateStore> {
-    /// Node needs to register with the hub.
-    Pending(PendingNodeState<S>),
-    /// Node is registered but not yet in the roster (needs activation).
-    Registered(RegisteredNodeState<S>),
-    /// Node is in the roster and ready to operate.
-    Activated(ActivatedNode<S>),
-}
-
-impl<S: NodeStateStore> NodeStateStage<S> {
-    pub fn into_pending(self) -> Option<PendingNodeState<S>> {
-        if let NodeStateStage::Pending(state) = self {
-            Some(state)
+                signing_key,
+                encryption_key,
+                roster,
+            ))
         } else {
-            None
+            Node::new_registered(state, self.store.clone(), self.config.clone())
         }
     }
-
-    pub fn into_registered(self) -> Option<RegisteredNodeState<S>> {
-        if let NodeStateStage::Registered(state) = self {
-            Some(state)
-        } else {
-            None
-        }
-    }
-
-    pub fn into_activated(self) -> Option<ActivatedNode<S>> {
-        if let NodeStateStage::Activated(node) = self {
-            Some(node)
-        } else {
-            None
-        }
-    }
-
-    /// Logout from whatever state we're in.
-    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        match self {
-            NodeStateStage::Pending(p) => p.logout().await,
-            NodeStateStage::Registered(r) => r.logout().await,
-            NodeStateStage::Activated(a) => a.logout().await,
-        }
-    }
-}
-
-/// Pending node state that has not completed remote registration.
-pub struct PendingNodeState<S: NodeStateStore> {
-    state: PersistedNodeState,
-    store: SharedStore<S>,
-    config: SharedConfig,
-}
-
-impl<S: NodeStateStore> PendingNodeState<S> {
-    pub(crate) fn new(state: PersistedNodeState, store: SharedStore<S>, config: SharedConfig) -> Self {
-        Self { state, store, config }
-    }
-
-    fn hub_addr(&self) -> String {
-        self.config.read().unwrap().hub_addr.clone()
-    }
-
-    pub fn is_registered(&self) -> bool {
-        self.state.is_registered()
-    }
-
-    pub fn complete_registration(
-        mut self,
-        registration: NodeRegistration,
-    ) -> Result<RegisteredNodeState<S>, NodeStateError<S::Error>> {
-        if self.state.is_registered() {
-            return Err(NodeStateError::AlreadyRegistered);
-        }
-
-        self.state.set_registration(registration);
-        self.store
-            .save(&self.state)
-            .map_err(NodeStateError::store)?;
-        RegisteredNodeState::new(self.state, self.store, self.config)
-    }
-
-    /// Register with the hub using a registration token.
-    ///
-    /// This connects to the hub, completes registration, persists the credentials,
-    /// and returns the registered state.
-    pub async fn register(
-        self,
-        token: &str,
-    ) -> Result<RegisteredNodeState<S>, NodeStateError<S::Error>> {
-        use crate::hub::HubClient;
-
-        let mut client = HubClient::connect(self.hub_addr())
-            .await
-            .map_err(NodeStateError::hub)?;
-        let registration = client
-            .complete_registration(token)
-            .await
-            .map_err(NodeStateError::hub)?;
-        self.complete_registration(registration)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn root_key_bytes(&self) -> &[u8; crate::types::ROOT_KEY_LEN] {
-        self.state.root_key.as_bytes()
-    }
-
-    /// Logout: delete local state.
-    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        self.store.delete().map_err(NodeStateError::store)
-    }
-}
-
-/// Registered node state ready for node runtime initialization.
-pub struct RegisteredNodeState<S: NodeStateStore> {
-    state: PersistedNodeState,
-    store: SharedStore<S>,
-    config: SharedConfig,
-}
-
-impl<S: NodeStateStore> RegisteredNodeState<S> {
-    pub(crate) fn new(
-        state: PersistedNodeState,
-        store: SharedStore<S>,
-        config: SharedConfig,
-    ) -> Result<Self, NodeStateError<S::Error>> {
-        if state.registration.is_none() {
-            return Err(NodeStateError::NotRegistered);
-        }
-
-        Ok(Self { state, store, config })
-    }
-
-    /// Get the hub address (internal use only).
-    pub(crate) fn hub_addr(&self) -> String {
-        self.config.read().unwrap().hub_addr.clone()
-    }
-
-    pub fn registration(&self) -> &NodeRegistration {
-        self.state
-            .registration
-            .as_ref()
-            .expect("registration must be present")
-    }
-
-    /// Get the root key bytes (internal use only).
-    pub(crate) fn root_key_bytes(&self) -> &[u8; crate::types::ROOT_KEY_LEN] {
-        self.state.root_key.as_bytes()
-    }
-
-    /// Logout: deregister from hub, then delete local state.
-    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        use crate::hub::HubClient;
-
-        let mut client = HubClient::connect(self.hub_addr())
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        client
-            .deregister_node(self.registration())
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        self.store.delete().map_err(NodeStateError::store)
-    }
-
-    /// List all nodes in the connectivity group.
-    pub async fn list_nodes(
-        &self,
-    ) -> Result<Vec<crate::hub::Node>, NodeStateError<S::Error>> {
-        use crate::hub::HubClient;
-
-        let mut client = HubClient::connect(self.hub_addr())
-            .await
-            .map_err(NodeStateError::hub)?;
-        client
-            .list_nodes(self.registration())
-            .await
-            .map_err(NodeStateError::hub)
-    }
-
-    /// Start a serving session.
-    ///
-    /// This allows a registered (but not yet activated) node to serve,
-    /// which is needed during bootstrap when no nodes are activated yet.
-    /// Note: Registered nodes cannot accept P2P connections (no roster yet).
-    ///
-    /// # Example
-    /// ```ignore
-    /// let (handle, session, _) = registered.start_serving().await?;
-    /// tokio::spawn(async move { session.run().await });
-    /// let code = handle.generate_pairing_secret().await?;
-    /// ```
-    pub async fn start_serving(
-        &self,
-    ) -> Result<
-        (
-            crate::serving::ServingHandle,
-            crate::serving::ServingSession,
-            Option<crate::serving::IncomingConnections>,
-        ),
-        NodeStateError<S::Error>,
-    > {
-        let reg = self.registration();
-        println!(
-            "Starting serving session for node {} in group {} (not yet activated)",
-            reg.node_number, reg.connectivity_group_id
-        );
-
-        let signing_key = SigningKeyPair::derive_from_root_key(self.state.root_key.as_bytes());
-        let hub_addr = self.config.read().unwrap().hub_addr.clone();
-
-        start_serving_impl(&hub_addr, signing_key, reg, None)
-            .await
-            .map_err(NodeStateError::hub)
-    }
-
-    /// Activate this node by pairing with an endorser node.
-    ///
-    /// The pairing code format is "node_number-secret" where secret is 10 base36 characters.
-    /// This performs the mutual key exchange and roster update, returning an activated node.
-    pub async fn activate(
-        &self,
-        pairing_code: &str,
-    ) -> Result<ActivatedNode<S>, NodeStateError<S::Error>> {
-        use crate::hub::HubClient;
-
-        // Parse the pairing code
-        let pairing_code =
-            PairingCode::parse(pairing_code).map_err(NodeStateError::InvalidPairingCode)?;
-        let endorser_node_number = pairing_code.node_number;
-
-        // Derive our signing key
-        let signing_key = SigningKeyPair::derive_from_root_key(self.state.root_key.as_bytes());
-
-        // Build the pairing request
-        let nonce = generate_nonce();
-        let payload = proto::pair_nodes_message::Payload {
-            sender_node_number: self.registration().node_number,
-            receiver_node_number: endorser_node_number,
-            public_key_spki: signing_key.public_key_spki(),
-            nonce: nonce.clone(),
-            reply_nonce: vec![],
-        };
-        let payload_bytes = payload.encode_to_vec();
-        let mac = pairing_code.secret.compute_mac(&payload_bytes);
-
-        let request_message = proto::PairNodesMessage {
-            payload: Some(payload),
-            mac,
-        };
-
-        // Connect and send the pairing request
-        let mut client = HubClient::connect(self.hub_addr())
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        let response = client
-            .pair_nodes(self.registration(), request_message)
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        // Verify the response
-        let response_payload = response
-            .payload
-            .ok_or(NodeStateError::MissingEndorserResponse)?;
-        let response_payload_bytes = response_payload.encode_to_vec();
-
-        if !pairing_code.secret.verify_mac(&response_payload_bytes, &response.mac) {
-            return Err(NodeStateError::MacVerificationFailed);
-        }
-
-        // Verify the response is for us and contains the expected reply_nonce
-        if response_payload.receiver_node_number != self.registration().node_number {
-            return Err(NodeStateError::MissingEndorserResponse);
-        }
-        if response_payload.reply_nonce != nonce {
-            return Err(NodeStateError::MacVerificationFailed);
-        }
-
-        let endorser_nonce = response_payload.nonce.clone();
-
-        // Fetch the current roster (unverified - we're not in it yet)
-        let current_roster = client
-            .get_unverified_roster(self.registration())
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        // Verify the base roster if not bootstrap (version > 0)
-        // We verify from the endorser's perspective since we're not in the roster yet
-        if current_roster.version > 0 {
-            verify_roster(
-                &current_roster,
-                endorser_node_number,
-                &response_payload.public_key_spki,
-            )
-            .map_err(NodeStateError::RosterVerificationFailed)?;
-        }
-
-        // Build and sign the activation payload
-        let activation_payload = build_activation_payload(
-            &current_roster,
-            endorser_node_number,
-            self.registration().node_number,
-            nonce,
-            endorser_nonce,
-        );
-        let activation_payload_bytes = activation_payload.encode_to_vec();
-        let new_node_signature = signing_key.sign(&activation_payload_bytes);
-
-        // Build the new roster using the appropriate builder
-        let new_roster = if current_roster.version == 0 {
-            // Bootstrap: create version 1 roster with both nodes
-            create_bootstrap_roster(
-                endorser_node_number,
-                &response_payload.public_key_spki,
-                self.registration().node_number,
-                &signing_key.public_key_spki(),
-                activation_payload.new_node_nonce,
-                activation_payload.endorser_nonce,
-                new_node_signature,
-            )
-        } else {
-            // Normal activation: add new node to existing roster
-            create_activation_roster(
-                &current_roster,
-                endorser_node_number,
-                self.registration().node_number,
-                &signing_key.public_key_spki(),
-                activation_payload.new_node_nonce,
-                activation_payload.endorser_nonce,
-                new_node_signature,
-            )
-        };
-
-        // Submit the roster update
-        let cosigned_roster = client
-            .update_roster(self.registration(), new_roster)
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        // Verify the cosigned roster - critical security check!
-        // The hub could have returned a tampered roster with extra nodes.
-        verify_roster(
-            &cosigned_roster,
-            self.registration().node_number,
-            &signing_key.public_key_spki(),
-        )
-        .map_err(NodeStateError::RosterVerificationFailed)?;
-
-        // Derive X25519 key for P2P connections
-        let x25519_key = X25519KeyPair::derive_from_root_key(self.state.root_key.as_bytes());
-
-        Ok(ActivatedNode {
-            signing_key,
-            x25519_key,
-            roster: cosigned_roster,
-            registration: self.registration().clone(),
-            store: self.store.clone(),
-            config: self.config.clone(),
-        })
-    }
-}
-
-/// An activated node that is in the roster and ready to operate.
-pub struct ActivatedNode<S: NodeStateStore> {
-    signing_key: SigningKeyPair,
-    x25519_key: X25519KeyPair,
-    roster: proto::roster::Roster,
-    registration: NodeRegistration,
-    store: SharedStore<S>,
-    config: SharedConfig,
-}
-
-impl<S: NodeStateStore> ActivatedNode<S> {
-    /// Get the node's signing key pair.
-    pub fn signing_key(&self) -> &SigningKeyPair {
-        &self.signing_key
-    }
-
-    /// Get the current roster.
-    pub fn roster(&self) -> &proto::roster::Roster {
-        &self.roster
-    }
-
-    /// Get the node registration info.
-    pub fn registration(&self) -> &NodeRegistration {
-        &self.registration
-    }
-
-    /// Get the node's number.
-    pub fn node_number(&self) -> i32 {
-        self.registration.node_number
-    }
-
-    /// Get the hub address (internal use only).
-    pub(crate) fn hub_addr(&self) -> String {
-        self.config.read().unwrap().hub_addr.clone()
-    }
-
-    /// Get the X25519 key pair (internal use only).
-    pub(crate) fn x25519_key(&self) -> &X25519KeyPair {
-        &self.x25519_key
-    }
-
-    /// List all nodes in the connectivity group.
-    pub async fn list_nodes(
-        &self,
-    ) -> Result<Vec<crate::hub::Node>, NodeStateError<S::Error>> {
-        use crate::hub::HubClient;
-
-        let hub_addr = self.config.read().unwrap().hub_addr.clone();
-        let mut client = HubClient::connect(&hub_addr)
-            .await
-            .map_err(NodeStateError::hub)?;
-        client
-            .list_nodes(&self.registration)
-            .await
-            .map_err(NodeStateError::hub)
-    }
-
-    /// Logout: self-revoke from roster, deregister from hub, delete local state.
-    pub async fn logout(self) -> Result<(), NodeStateError<S::Error>> {
-        use crate::hub::HubClient;
-        use crate::hub::proto::roster::revocation;
-        use crate::roster::{compute_roster_hash, create_revocation_roster};
-
-        let hub_addr = self.config.read().unwrap().hub_addr.clone();
-        let mut client = HubClient::connect(&hub_addr)
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        // Step 1: Self-revoke from roster
-        let base_hash = compute_roster_hash(&self.roster);
-        let payload = revocation::Payload {
-            base_version: self.roster.version,
-            base_version_hash: base_hash,
-            new_version: self.roster.version + 1,
-            revoked_node_number: self.registration.node_number,
-            revoker_node_number: self.registration.node_number,
-        };
-        let signature = self.signing_key.sign(&payload.encode_to_vec());
-
-        let new_roster = create_revocation_roster(
-            &self.roster,
-            self.registration.node_number,
-            self.registration.node_number,
-            signature,
-        );
-
-        client
-            .update_roster(&self.registration, new_roster)
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        // Step 2: Deregister from hub
-        client
-            .deregister_node(&self.registration)
-            .await
-            .map_err(NodeStateError::hub)?;
-
-        // Step 3: Delete local state
-        self.store.delete().map_err(NodeStateError::store)
-    }
-
-    /// Start a serving session.
-    ///
-    /// Connects to the hub and returns a handle + session pair + incoming connection receiver.
-    /// The session should be spawned to run the event loop, while the handle
-    /// can be used to send commands (e.g., generate pairing codes).
-    /// The incoming connection receiver delivers P2P connections from other nodes.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let (handle, session, incoming_rx) = activated.start_serving().await?;
-    /// tokio::spawn(async move { session.run().await });
-    /// // Handle incoming P2P connections
-    /// while let Some(Ok(conn)) = incoming.quic.recv().await {
-    ///     // conn is already connected, ready to use
-    ///     let stream = conn.accept_stream().await?;
-    ///     // ... use stream
-    /// }
-    /// ```
-    pub async fn start_serving(
-        &self,
-    ) -> Result<
-        (
-            crate::serving::ServingHandle,
-            crate::serving::ServingSession,
-            Option<crate::serving::IncomingConnections>,
-        ),
-        NodeStateError<S::Error>,
-    > {
-        use crate::serving::P2pConfig;
-
-        println!(
-            "Starting serving session for node {} in group {}",
-            self.registration.node_number, self.registration.connectivity_group_id
-        );
-        println!("Roster has {} nodes", self.roster.nodes.len());
-
-        let hub_addr = self.config.read().unwrap().hub_addr.clone();
-
-        let p2p_config = P2pConfig {
-            x25519_key: self.x25519_key.clone(),
-            hub_addr: hub_addr.clone(),
-            registration: self.registration.clone(),
-        };
-
-        start_serving_impl(
-            &hub_addr,
-            self.signing_key.clone(),
-            &self.registration,
-            Some(p2p_config),
-        )
-        .await
-        .map_err(NodeStateError::hub)
-    }
-
-    /// Connect to a peer node using UDP transport.
-    ///
-    /// This establishes a P2P connection to the specified peer using ICE for
-    /// NAT traversal. The connection is encrypted using X25519 key exchange.
-    /// UDP provides raw datagram delivery - low overhead but unreliable.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let conn = activated.connect_udp(42).await?;
-    /// conn.send(b"hello")?;
-    /// let response = conn.recv().await?;
-    /// ```
-    pub async fn connect_udp(
-        &self,
-        peer_node_number: i32,
-    ) -> Result<crate::p2p::UdpConnection, crate::p2p::P2pError> {
-        use crate::hub::HubClient;
-        use crate::ice::IceCaller;
-        use crate::p2p::{UdpConnection, P2pError};
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-        use ed25519_dalek::pkcs8::DecodePublicKey;
-
-        let hub_addr = self.config.read().unwrap().hub_addr.clone();
-
-        // Connect to hub
-        let mut client = HubClient::connect(&hub_addr).await?;
-
-        // Get STUN/TURN configuration
-        let stun_turn_config = client
-            .get_stun_turn_config(&self.registration)
-            .await?;
-
-        // Create ICE caller and gather candidates
-        let ice_caller = IceCaller::new(&stun_turn_config)?;
-        let caller_sdp = ice_caller.local_description().to_string();
-
-        // Build the StartConnectionRequest
-        // Sign: answerer_node_number || caller_x25519_public_key || caller_sdp
-        let mut message_to_sign = Vec::new();
-        message_to_sign.extend_from_slice(&peer_node_number.to_le_bytes());
-        message_to_sign.extend_from_slice(&self.x25519_key.public_key());
-        message_to_sign.extend_from_slice(caller_sdp.as_bytes());
-        let signature = self.signing_key.sign(&message_to_sign);
-
-        let request = proto::StartConnectionRequest {
-            answerer_node_number: peer_node_number,
-            caller_x25519_public_key: self.x25519_key.public_key().to_vec(),
-            caller_sdp,
-            signature,
-            stun_turn_config: Some(stun_turn_config),
-            transport: proto::Transport::Datagram.into(),
-        };
-
-        // Send to hub, which forwards to the answerer
-        let response = client
-            .start_connection(&self.registration, request)
-            .await?;
-
-        // Verify answerer's signature against roster
-        let peer_node = self.roster.nodes.iter()
-            .find(|n| n.node_number == peer_node_number)
-            .ok_or(P2pError::SignatureVerificationFailed)?;
-
-        let verifying_key = VerifyingKey::from_public_key_der(&peer_node.public_key_spki)
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        // Verify signature over: connection_id || answerer_x25519_public_key || answerer_sdp
-        let mut message_to_verify = Vec::new();
-        message_to_verify.extend_from_slice(&response.connection_id.to_le_bytes());
-        message_to_verify.extend_from_slice(&response.answerer_x25519_public_key);
-        message_to_verify.extend_from_slice(response.answerer_sdp.as_bytes());
-
-        let sig_bytes: [u8; 64] = response.signature.clone().try_into()
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-        let sig = Signature::from_bytes(&sig_bytes);
-
-        verifying_key.verify(&message_to_verify, &sig)
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        // Extract peer's X25519 public key
-        let peer_x25519_public: [u8; 32] = response
-            .answerer_x25519_public_key
-            .try_into()
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        // Derive shared secret
-        let shared_secret = self.x25519_key.diffie_hellman(&peer_x25519_public);
-
-        // Complete ICE connection with answerer's SDP
-        ice_caller.connect(&response.answerer_sdp).await?;
-
-        UdpConnection::new_caller(
-            peer_node_number,
-            response.connection_id,
-            ice_caller,
-            shared_secret,
-        )
-    }
-
-    /// Connect to a peer node using QUIC transport.
-    ///
-    /// This establishes a P2P connection to the specified peer using ICE for
-    /// NAT traversal, then performs a QUIC handshake with TLS-PSK derived from
-    /// the X25519 key exchange. QUIC provides reliable, ordered streams.
-    ///
-    /// # Example
-    /// ```ignore
-    /// let conn = activated.connect_quic(42).await?;
-    /// let stream = conn.open_stream().await?;
-    /// stream.write_all(b"hello").await?;
-    /// let mut buf = [0u8; 1024];
-    /// let n = stream.read(&mut buf).await?;
-    /// ```
-    pub async fn connect_quic(
-        &self,
-        peer_node_number: i32,
-    ) -> Result<crate::p2p::QuicConnection, crate::p2p::P2pError> {
-        use crate::hub::HubClient;
-        use crate::ice::IceCaller;
-        use crate::p2p::{QuicConnection, P2pError};
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-        use ed25519_dalek::pkcs8::DecodePublicKey;
-
-        let hub_addr = self.config.read().unwrap().hub_addr.clone();
-
-        // Connect to hub
-        let mut client = HubClient::connect(&hub_addr).await?;
-
-        // Get STUN/TURN configuration
-        let stun_turn_config = client
-            .get_stun_turn_config(&self.registration)
-            .await?;
-
-        // Create ICE caller and gather candidates
-        let ice_caller = IceCaller::new(&stun_turn_config)?;
-        let caller_sdp = ice_caller.local_description().to_string();
-
-        // Build the StartConnectionRequest
-        // Sign: answerer_node_number || caller_x25519_public_key || caller_sdp
-        let mut message_to_sign = Vec::new();
-        message_to_sign.extend_from_slice(&peer_node_number.to_le_bytes());
-        message_to_sign.extend_from_slice(&self.x25519_key.public_key());
-        message_to_sign.extend_from_slice(caller_sdp.as_bytes());
-        let signature = self.signing_key.sign(&message_to_sign);
-
-        let request = proto::StartConnectionRequest {
-            answerer_node_number: peer_node_number,
-            caller_x25519_public_key: self.x25519_key.public_key().to_vec(),
-            caller_sdp,
-            signature,
-            stun_turn_config: Some(stun_turn_config),
-            transport: proto::Transport::Stream.into(),
-        };
-
-        // Send to hub, which forwards to the answerer
-        let response = client
-            .start_connection(&self.registration, request)
-            .await?;
-
-        // Verify answerer's signature against roster
-        let peer_node = self.roster.nodes.iter()
-            .find(|n| n.node_number == peer_node_number)
-            .ok_or(P2pError::SignatureVerificationFailed)?;
-
-        let verifying_key = VerifyingKey::from_public_key_der(&peer_node.public_key_spki)
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        // Verify signature over: connection_id || answerer_x25519_public_key || answerer_sdp
-        let mut message_to_verify = Vec::new();
-        message_to_verify.extend_from_slice(&response.connection_id.to_le_bytes());
-        message_to_verify.extend_from_slice(&response.answerer_x25519_public_key);
-        message_to_verify.extend_from_slice(response.answerer_sdp.as_bytes());
-
-        let sig_bytes: [u8; 64] = response.signature.clone().try_into()
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-        let sig = Signature::from_bytes(&sig_bytes);
-
-        verifying_key.verify(&message_to_verify, &sig)
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        // Extract peer's X25519 public key
-        let peer_x25519_public: [u8; 32] = response
-            .answerer_x25519_public_key
-            .try_into()
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        // Derive shared secret
-        let shared_secret = self.x25519_key.diffie_hellman(&peer_x25519_public);
-
-        // Complete ICE connection with answerer's SDP
-        ice_caller.connect(&response.answerer_sdp).await?;
-
-        // Complete QUIC handshake
-        QuicConnection::connect_caller(
-            peer_node_number,
-            response.connection_id,
-            ice_caller,
-            shared_secret,
-        )
-        .await
-    }
-
-}
-
-/// Test helper for creating ActivatedNode instances.
-#[doc(hidden)]
-impl ActivatedNode<crate::storage::InMemoryNodeStateStore> {
-    /// Create an ActivatedNode for testing with explicit configuration.
-    pub fn new_for_test(
-        root_key: [u8; 32],
-        roster: proto::roster::Roster,
-        registration: NodeRegistration,
-        hub_addr: String,
-    ) -> Self {
-        use crate::storage::InMemoryNodeStateStore;
-
-        Self {
-            signing_key: SigningKeyPair::derive_from_root_key(&root_key),
-            x25519_key: X25519KeyPair::derive_from_root_key(&root_key),
-            roster,
-            registration,
-            store: std::sync::Arc::new(InMemoryNodeStateStore::new()),
-            config: std::sync::Arc::new(std::sync::RwLock::new(RuntimeConfig { hub_addr })),
-        }
-    }
-}
-
-/// Helper to start a serving session (used by both RegisteredNodeState and ActivatedNode).
-async fn start_serving_impl(
-    hub_addr: &str,
-    signing_key: SigningKeyPair,
-    registration: &NodeRegistration,
-    p2p_config: Option<crate::serving::P2pConfig>,
-) -> Result<
-    (
-        crate::serving::ServingHandle,
-        crate::serving::ServingSession,
-        Option<crate::serving::IncomingConnections>,
-    ),
-    crate::hub::HubError,
-> {
-    use crate::hub::HubClient;
-    use crate::serving::ServingSession;
-
-    let mut client = HubClient::connect(hub_addr).await?;
-    let conn = client.start_serving(registration).await?;
-
-    let (handle, session, incoming) = ServingSession::new(
-        conn,
-        signing_key,
-        registration.connectivity_group_id.clone(),
-        registration.node_number,
-        p2p_config,
-    );
-
-    Ok((handle, session, incoming))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::NodeState;
     use crate::storage::InMemoryNodeStateStore;
 
     #[tokio::test]
     async fn storage_initializes_and_reuses_state() {
         let storage = NodeStorage::new(InMemoryNodeStateStore::new());
-        let first_stage = storage.restore_or_init_node_state().await.unwrap();
-        let pending = first_stage
-            .into_pending()
-            .expect("initial state should be pending");
-        let first_key = *pending.root_key_bytes();
+        let first_node = storage.restore_or_init_node().await.unwrap();
+        assert_eq!(first_node.state(), NodeState::Pending);
+        let first_key = *first_node.root_key_bytes();
 
         // Re-initialize should return the same state
         let storage2 = NodeStorage::new(InMemoryNodeStateStore::new());
         // Note: InMemoryNodeStateStore doesn't persist across instances,
         // so we test with the same storage instance
-        drop(pending);
-        let second_stage = storage.restore_or_init_node_state().await.unwrap();
-        let pending_second = second_stage
-            .into_pending()
-            .expect("state remains pending until registration");
-        assert_eq!(pending_second.root_key_bytes(), &first_key);
+        drop(first_node);
+        let second_node = storage.restore_or_init_node().await.unwrap();
+        assert_eq!(second_node.state(), NodeState::Pending);
+        assert_eq!(second_node.root_key_bytes(), &first_key);
         drop(storage2); // silence unused warning
     }
 
     #[tokio::test]
     async fn completing_registration_persists_and_transitions() {
         let storage = NodeStorage::new(InMemoryNodeStateStore::new());
-        let stage = storage.restore_or_init_node_state().await.unwrap();
-        let pending = stage
-            .into_pending()
-            .expect("expected pending state prior to registration");
+        let mut node = storage.restore_or_init_node().await.unwrap();
+        assert_eq!(node.state(), NodeState::Pending);
         let registration = crate::types::registration_fixture();
 
-        let registered = pending.complete_registration(registration.clone()).unwrap();
-        assert_eq!(registered.registration(), &registration);
+        node.complete_registration(registration.clone()).unwrap();
+        assert_eq!(node.state(), NodeState::Registered);
+        assert_eq!(node.registration(), Some(&registration));
 
         // Verify registration was persisted by checking the store directly
         let loaded = storage
