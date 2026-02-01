@@ -1,12 +1,10 @@
-use super::callbacks::{CallbackContext, WispersInitCallback, WispersStage};
-use super::handles::{
-    ActivatedImpl, ManagerImpl, PendingImpl, RegisteredImpl, WispersActivatedNodeHandle,
-    WispersNodeStorageHandle, WispersPendingNodeHandle, WispersRegisteredNodeHandle,
-};
+use super::callbacks::{CallbackContext, WispersInitCallback, WispersNodeState};
+use super::handles::{ManagerImpl, NodeImpl, WispersNodeHandle, WispersNodeStorageHandle};
 use super::helpers::{c_str_to_string, WispersRegistrationInfo};
 use super::runtime;
 use crate::errors::WispersStatus;
-use crate::state::{NodeStateStage, NodeStorage};
+use crate::node::NodeState;
+use crate::state::NodeStorage;
 use crate::storage::foreign::WispersNodeStorageCallbacks;
 use crate::storage::{ForeignNodeStateStore, InMemoryNodeStateStore};
 use std::ffi::c_void;
@@ -59,17 +57,7 @@ pub extern "C" fn wispers_storage_read_registration(
     }
 
     let wrapper = unsafe { &*handle };
-
-    // Handle each variant separately to avoid type mismatch
-    let maybe_reg: Result<Option<crate::types::NodeRegistration>, WispersStatus> = match &wrapper.0
-    {
-        ManagerImpl::InMemory(storage) => storage
-            .read_registration()
-            .map_err(|_| WispersStatus::StoreError),
-        ManagerImpl::Foreign(storage) => storage
-            .read_registration()
-            .map_err(|_| WispersStatus::StoreError),
-    };
+    let maybe_reg = wrapper.0.read_registration();
 
     match maybe_reg {
         Ok(Some(reg)) => match WispersRegistrationInfo::from_registration(&reg) {
@@ -102,17 +90,14 @@ pub extern "C" fn wispers_storage_override_hub_addr(
     };
 
     let wrapper = unsafe { &*handle };
-    match &wrapper.0 {
-        ManagerImpl::InMemory(storage) => storage.override_hub_addr(addr),
-        ManagerImpl::Foreign(storage) => storage.override_hub_addr(addr),
-    }
+    wrapper.0.override_hub_addr(addr);
 
     WispersStatus::Success
 }
 
 /// Restore or initialize node state asynchronously.
 ///
-/// On success, the callback receives the stage and exactly one non-null handle.
+/// On success, the callback receives a single node handle and the current state.
 /// The storage handle remains valid and is NOT consumed by this call.
 #[unsafe(no_mangle)]
 pub extern "C" fn wispers_storage_restore_or_init_async(
@@ -132,137 +117,106 @@ pub extern "C" fn wispers_storage_restore_or_init_async(
     let wrapper = unsafe { &*handle };
     let ctx = CallbackContext(ctx);
 
-    // Clone the storage so we can move it into the async block
-    match &wrapper.0 {
-        ManagerImpl::InMemory(storage) => {
-            let storage = storage.clone();
-            runtime::spawn(async move {
-                let result = storage.restore_or_init_node_state().await;
-                match result {
-                    Ok(stage) => {
-                        let (stage_enum, pending, registered, activated) = match stage {
-                            NodeStateStage::Pending(p) => {
-                                let h = Box::into_raw(Box::new(WispersPendingNodeHandle(
-                                    PendingImpl::InMemory(p),
-                                )));
-                                (WispersStage::Pending, h, std::ptr::null_mut(), std::ptr::null_mut())
-                            }
-                            NodeStateStage::Registered(r) => {
-                                let h = Box::into_raw(Box::new(WispersRegisteredNodeHandle(
-                                    RegisteredImpl::InMemory(r),
-                                )));
-                                (WispersStage::Registered, std::ptr::null_mut(), h, std::ptr::null_mut())
-                            }
-                            NodeStateStage::Activated(a) => {
-                                let h = Box::into_raw(Box::new(WispersActivatedNodeHandle(
-                                    ActivatedImpl::InMemory(a),
-                                )));
-                                (WispersStage::Activated, std::ptr::null_mut(), std::ptr::null_mut(), h)
-                            }
-                        };
-                        unsafe {
-                            callback(ctx.ptr(), WispersStatus::Success, stage_enum, pending, registered, activated);
-                        }
-                    }
-                    Err(e) => {
-                        let status = map_node_state_error_in_memory(&e);
-                        unsafe {
-                            callback(
-                                ctx.ptr(),
-                                status,
-                                WispersStage::Pending,
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                            );
-                        }
-                    }
-                }
-            });
-        }
-        ManagerImpl::Foreign(storage) => {
-            let storage = storage.clone();
-            runtime::spawn(async move {
-                let result = storage.restore_or_init_node_state().await;
-                match result {
-                    Ok(stage) => {
-                        let (stage_enum, pending, registered, activated) = match stage {
-                            NodeStateStage::Pending(p) => {
-                                let h = Box::into_raw(Box::new(WispersPendingNodeHandle(
-                                    PendingImpl::Foreign(p),
-                                )));
-                                (WispersStage::Pending, h, std::ptr::null_mut(), std::ptr::null_mut())
-                            }
-                            NodeStateStage::Registered(r) => {
-                                let h = Box::into_raw(Box::new(WispersRegisteredNodeHandle(
-                                    RegisteredImpl::Foreign(r),
-                                )));
-                                (WispersStage::Registered, std::ptr::null_mut(), h, std::ptr::null_mut())
-                            }
-                            NodeStateStage::Activated(a) => {
-                                let h = Box::into_raw(Box::new(WispersActivatedNodeHandle(
-                                    ActivatedImpl::Foreign(a),
-                                )));
-                                (WispersStage::Activated, std::ptr::null_mut(), std::ptr::null_mut(), h)
-                            }
-                        };
-                        unsafe {
-                            callback(ctx.ptr(), WispersStatus::Success, stage_enum, pending, registered, activated);
-                        }
-                    }
-                    Err(e) => {
-                        let status = map_node_state_error_foreign(&e);
-                        unsafe {
-                            callback(
-                                ctx.ptr(),
-                                status,
-                                WispersStage::Pending,
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                            );
-                        }
-                    }
-                }
-            });
-        }
-    }
+    wrapper.0.restore_or_init_async(ctx, callback);
 
     WispersStatus::Success
 }
 
-fn map_node_state_error_in_memory(
-    e: &crate::errors::NodeStateError<crate::storage::InMemoryStoreError>,
-) -> WispersStatus {
-    use crate::errors::NodeStateError;
-    match e {
-        NodeStateError::Store(_) => WispersStatus::StoreError,
-        NodeStateError::Hub(_) => WispersStatus::HubError,
-        NodeStateError::AlreadyRegistered => WispersStatus::AlreadyRegistered,
-        NodeStateError::NotRegistered => WispersStatus::NotRegistered,
-        NodeStateError::InvalidPairingCode(_) => WispersStatus::InvalidPairingCode,
-        NodeStateError::MacVerificationFailed => WispersStatus::ActivationFailed,
-        NodeStateError::MissingEndorserResponse => WispersStatus::ActivationFailed,
-        NodeStateError::RosterVerificationFailed(_) => WispersStatus::ActivationFailed,
-        NodeStateError::InvalidState { .. } => WispersStatus::InvalidState,
+// Helper methods on ManagerImpl to reduce duplication
+impl ManagerImpl {
+    fn read_registration(&self) -> Result<Option<crate::types::NodeRegistration>, WispersStatus> {
+        match self {
+            ManagerImpl::InMemory(storage) => storage
+                .read_registration()
+                .map_err(|_| WispersStatus::StoreError),
+            ManagerImpl::Foreign(storage) => storage
+                .read_registration()
+                .map_err(|_| WispersStatus::StoreError),
+        }
+    }
+
+    fn override_hub_addr(&self, addr: String) {
+        match self {
+            ManagerImpl::InMemory(storage) => storage.override_hub_addr(addr),
+            ManagerImpl::Foreign(storage) => storage.override_hub_addr(addr),
+        }
+    }
+
+    fn restore_or_init_async(
+        &self,
+        ctx: CallbackContext,
+        callback: unsafe extern "C" fn(
+            *mut c_void,
+            WispersStatus,
+            *mut WispersNodeHandle,
+            WispersNodeState,
+        ),
+    ) {
+        match self {
+            ManagerImpl::InMemory(storage) => {
+                let storage = storage.clone();
+                runtime::spawn(async move {
+                    let result = storage.restore_or_init_node().await;
+                    match result {
+                        Ok(node) => {
+                            let state = node_state_to_ffi(node.state());
+                            let handle = Box::into_raw(Box::new(WispersNodeHandle(
+                                NodeImpl::InMemory(node),
+                            )));
+                            unsafe {
+                                callback(ctx.ptr(), WispersStatus::Success, handle, state);
+                            }
+                        }
+                        Err(e) => {
+                            let status: WispersStatus = e.into();
+                            unsafe {
+                                callback(
+                                    ctx.ptr(),
+                                    status,
+                                    std::ptr::null_mut(),
+                                    WispersNodeState::Pending,
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+            ManagerImpl::Foreign(storage) => {
+                let storage = storage.clone();
+                runtime::spawn(async move {
+                    let result = storage.restore_or_init_node().await;
+                    match result {
+                        Ok(node) => {
+                            let state = node_state_to_ffi(node.state());
+                            let handle = Box::into_raw(Box::new(WispersNodeHandle(
+                                NodeImpl::Foreign(node),
+                            )));
+                            unsafe {
+                                callback(ctx.ptr(), WispersStatus::Success, handle, state);
+                            }
+                        }
+                        Err(e) => {
+                            let status: WispersStatus = e.into();
+                            unsafe {
+                                callback(
+                                    ctx.ptr(),
+                                    status,
+                                    std::ptr::null_mut(),
+                                    WispersNodeState::Pending,
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
     }
 }
 
-fn map_node_state_error_foreign(
-    e: &crate::errors::NodeStateError<crate::storage::foreign::ForeignStoreError>,
-) -> WispersStatus {
-    use crate::errors::NodeStateError;
-    use crate::storage::foreign::ForeignStoreError;
-    match e {
-        NodeStateError::Store(ForeignStoreError::Status(s)) => *s,
-        NodeStateError::Store(_) => WispersStatus::StoreError,
-        NodeStateError::Hub(_) => WispersStatus::HubError,
-        NodeStateError::AlreadyRegistered => WispersStatus::AlreadyRegistered,
-        NodeStateError::NotRegistered => WispersStatus::NotRegistered,
-        NodeStateError::InvalidPairingCode(_) => WispersStatus::InvalidPairingCode,
-        NodeStateError::MacVerificationFailed => WispersStatus::ActivationFailed,
-        NodeStateError::MissingEndorserResponse => WispersStatus::ActivationFailed,
-        NodeStateError::RosterVerificationFailed(_) => WispersStatus::ActivationFailed,
-        NodeStateError::InvalidState { .. } => WispersStatus::InvalidState,
+fn node_state_to_ffi(state: NodeState) -> WispersNodeState {
+    match state {
+        NodeState::Pending => WispersNodeState::Pending,
+        NodeState::Registered => WispersNodeState::Registered,
+        NodeState::Activated => WispersNodeState::Activated,
     }
 }

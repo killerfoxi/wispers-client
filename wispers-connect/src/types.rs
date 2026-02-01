@@ -113,6 +113,24 @@ impl<T: Into<String>> From<T> for ConnectivityGroupId {
     }
 }
 
+/// Information about a node in the connectivity group.
+///
+/// This combines data from the hub (registration) and roster (activation status).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeInfo {
+    /// The node's number within the connectivity group.
+    pub node_number: i32,
+    /// The node's display name (may be empty).
+    pub name: String,
+    /// Whether this is the current node (self).
+    pub is_self: bool,
+    /// Whether the node is activated (in the roster and not revoked).
+    /// None if we don't have roster access (not activated ourselves).
+    pub is_activated: Option<bool>,
+    /// Unix timestamp in milliseconds when the node was last seen.
+    pub last_seen_at_millis: i64,
+}
+
 /// Snapshot of all persisted node state; mostly kept internal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistedNodeState {

@@ -16,7 +16,7 @@ use crate::roster::{
 };
 use crate::state::{RuntimeConfig, SharedConfig};
 use crate::storage::{NodeStateStore, SharedStore};
-use crate::types::{NodeRegistration, PersistedNodeState};
+use crate::types::{NodeInfo, NodeRegistration, PersistedNodeState};
 use prost::Message;
 
 /// The state a node is currently in (state machine state, not persisted state).
@@ -125,7 +125,7 @@ impl<S: NodeStateStore> Node<S> {
     }
 
     /// Get the hub address.
-    fn hub_addr(&self) -> String {
+    pub(crate) fn hub_addr(&self) -> String {
         self.config.read().unwrap().hub_addr.clone()
     }
 
@@ -195,24 +195,29 @@ impl<S: NodeStateStore> Node<S> {
     }
 
     /// Get the signing key. Only available when activated.
-    pub(crate) fn signing_key(&self) -> Result<&SigningKeyPair, NodeStateError<S::Error>> {
-        self.require_activated()?;
-        Ok(self.signing_key.as_ref().expect("activated has signing key"))
+    pub(crate) fn signing_key(&self) -> Option<&SigningKeyPair> {
+        self.signing_key.as_ref()
     }
 
     /// Get the encryption key (X25519). Only available when activated.
-    pub(crate) fn encryption_key(&self) -> Result<&X25519KeyPair, NodeStateError<S::Error>> {
-        self.require_activated()?;
-        Ok(self
-            .encryption_key
-            .as_ref()
-            .expect("activated has encryption key"))
+    pub(crate) fn encryption_key(&self) -> Option<&X25519KeyPair> {
+        self.encryption_key.as_ref()
     }
 
     /// Get the roster. Only available when activated.
-    pub fn roster(&self) -> Result<&proto::roster::Roster, NodeStateError<S::Error>> {
-        self.require_activated()?;
-        Ok(self.roster.as_ref().expect("activated has roster"))
+    pub(crate) fn roster(&self) -> Option<&proto::roster::Roster> {
+        self.roster.as_ref()
+    }
+
+    /// Get a derived signing key (for registered nodes that need to serve).
+    /// This derives the key on demand from the root key.
+    pub(crate) fn derive_signing_key(&self) -> Option<SigningKeyPair> {
+        if self.state() == NodeState::Pending {
+            return None;
+        }
+        Some(SigningKeyPair::derive_from_root_key(
+            self.persisted.root_key.as_bytes(),
+        ))
     }
 
     // -------------------------------------------------------------------------
@@ -271,17 +276,49 @@ impl<S: NodeStateStore> Node<S> {
     /// List all nodes in the connectivity group.
     ///
     /// Requires: Registered or Activated state.
-    pub async fn list_nodes(&self) -> Result<Vec<crate::hub::Node>, NodeStateError<S::Error>> {
+    ///
+    /// Returns combined information about each node:
+    /// - Basic info (node_number, name, last_seen) from the hub
+    /// - Activation status from the roster (if this node is activated)
+    /// - `is_self` indicates whether this is the current node
+    pub async fn list_nodes(&self) -> Result<Vec<NodeInfo>, NodeStateError<S::Error>> {
         use crate::hub::HubClient;
 
         let registration = self.require_at_least_registered()?;
         let mut client = HubClient::connect(self.hub_addr())
             .await
             .map_err(NodeStateError::hub)?;
-        client
+        let hub_nodes = client
             .list_nodes(registration)
             .await
-            .map_err(NodeStateError::hub)
+            .map_err(NodeStateError::hub)?;
+
+        // Build a set of activated node numbers from the roster (if available)
+        let activated_nodes: Option<std::collections::HashSet<i32>> =
+            self.roster.as_ref().map(|r| {
+                r.nodes
+                    .iter()
+                    .filter(|n| !n.revoked)
+                    .map(|n| n.node_number)
+                    .collect()
+            });
+
+        let my_node_number = registration.node_number;
+
+        let nodes = hub_nodes
+            .into_iter()
+            .map(|hub_node| NodeInfo {
+                node_number: hub_node.node_number,
+                name: hub_node.name,
+                is_self: hub_node.node_number == my_node_number,
+                is_activated: activated_nodes
+                    .as_ref()
+                    .map(|set| set.contains(&hub_node.node_number)),
+                last_seen_at_millis: hub_node.last_seen_at_millis,
+            })
+            .collect();
+
+        Ok(nodes)
     }
 
     /// Start a serving session.

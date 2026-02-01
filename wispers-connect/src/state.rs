@@ -39,10 +39,20 @@ impl Default for RuntimeConfig {
 pub(crate) type SharedConfig = Arc<RwLock<RuntimeConfig>>;
 
 /// High-level storage handle that drives state initialization and persistence.
-#[derive(Clone)]
 pub struct NodeStorage<S: NodeStateStore> {
     store: SharedStore<S>,
     config: SharedConfig,
+}
+
+// Manual Clone impl because #[derive(Clone)] adds unnecessary S: Clone bound.
+// Arc<S> is always Clone regardless of S.
+impl<S: NodeStateStore> Clone for NodeStorage<S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            config: self.config.clone(),
+        }
+    }
 }
 
 impl<S: NodeStateStore> NodeStorage<S> {

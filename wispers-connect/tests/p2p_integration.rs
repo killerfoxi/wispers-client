@@ -7,7 +7,7 @@ mod common;
 use prost::Message;
 use wispers_connect::crypto::SigningKeyPair;
 use wispers_connect::hub::proto::roster::{self, addendum, Roster};
-use wispers_connect::state::ActivatedNode;
+use wispers_connect::Node;
 use wispers_connect::types::{AuthToken, ConnectivityGroupId, NodeRegistration};
 
 use common::FakeHub;
@@ -82,8 +82,8 @@ async fn test_p2p_connection_via_hub() {
     let registration_2 = NodeRegistration::new(group_id, 2, AuthToken::new("token2"));
 
     // Create activated nodes
-    let node1 = ActivatedNode::new_for_test(root_key_1, roster.clone(), registration_1, hub_url.clone());
-    let node2 = ActivatedNode::new_for_test(root_key_2, roster, registration_2, hub_url);
+    let node1 = Node::new_activated_for_test(root_key_1, roster.clone(), registration_1, hub_url.clone());
+    let node2 = Node::new_activated_for_test(root_key_2, roster, registration_2, hub_url);
 
     // Node 2 starts serving
     let (handle, session, incoming_rx) = node2.start_serving().await.expect("node2 starts serving");
@@ -134,13 +134,13 @@ async fn test_p2p_multiple_messages() {
     let hub_url = format!("http://{}", hub_addr);
 
     let group_id = ConnectivityGroupId::from("test");
-    let node1 = ActivatedNode::new_for_test(
+    let node1 = Node::new_activated_for_test(
         root_key_1,
         roster.clone(),
         NodeRegistration::new(group_id.clone(), 1, AuthToken::new("t1")),
         hub_url.clone(),
     );
-    let node2 = ActivatedNode::new_for_test(
+    let node2 = Node::new_activated_for_test(
         root_key_2,
         roster,
         NodeRegistration::new(group_id, 2, AuthToken::new("t2")),

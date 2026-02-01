@@ -1,7 +1,7 @@
 //! FFI bindings for P2P connections.
 
 use super::callbacks::CallbackContext;
-use super::handles::ActivatedImpl;
+use super::handles::{NodeImpl, WispersNodeHandle};
 use super::runtime;
 use crate::errors::WispersStatus;
 use crate::p2p::{QuicConnection, QuicStream, UdpConnection};
@@ -19,11 +19,11 @@ impl SendableUdpConnPtr {
     }
 }
 
-struct SendableActivatedPtr(*mut super::handles::WispersActivatedNodeHandle);
-unsafe impl Send for SendableActivatedPtr {}
+struct SendableNodePtr(*mut WispersNodeHandle);
+unsafe impl Send for SendableNodePtr {}
 
-impl SendableActivatedPtr {
-    unsafe fn get(&self) -> &super::handles::WispersActivatedNodeHandle {
+impl SendableNodePtr {
+    unsafe fn get(&self) -> &WispersNodeHandle {
         unsafe { &*self.0 }
     }
 }
@@ -64,11 +64,12 @@ pub extern "C" fn wispers_udp_connection_free(handle: *mut WispersUdpConnectionH
 
 /// Connect to a peer node using UDP transport.
 ///
-/// The activated handle is NOT consumed.
+/// Returns INVALID_STATE if the node is not in Activated state.
+/// The node handle is NOT consumed.
 /// On success, callback receives the UDP connection handle.
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_activated_node_connect_udp_async(
-    handle: *mut super::handles::WispersActivatedNodeHandle,
+pub extern "C" fn wispers_node_connect_udp_async(
+    handle: *mut WispersNodeHandle,
     peer_node_number: c_int,
     ctx: *mut c_void,
     callback: WispersUdpConnectionCallback,
@@ -83,13 +84,13 @@ pub extern "C" fn wispers_activated_node_connect_udp_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let activated_ptr = SendableActivatedPtr(handle);
+    let node_ptr = SendableNodePtr(handle);
 
     runtime::spawn(async move {
-        let wrapper = unsafe { activated_ptr.get() };
+        let wrapper = unsafe { node_ptr.get() };
         let result = match &wrapper.0 {
-            ActivatedImpl::InMemory(activated) => activated.connect_udp(peer_node_number).await,
-            ActivatedImpl::Foreign(activated) => activated.connect_udp(peer_node_number).await,
+            NodeImpl::InMemory(node) => node.connect_udp(peer_node_number).await,
+            NodeImpl::Foreign(node) => node.connect_udp(peer_node_number).await,
         };
 
         match result {
@@ -265,11 +266,12 @@ pub extern "C" fn wispers_quic_stream_free(handle: *mut WispersQuicStreamHandle)
 
 /// Connect to a peer node using QUIC transport.
 ///
-/// The activated handle is NOT consumed.
+/// Returns INVALID_STATE if the node is not in Activated state.
+/// The node handle is NOT consumed.
 /// On success, callback receives the QUIC connection handle.
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_activated_node_connect_quic_async(
-    handle: *mut super::handles::WispersActivatedNodeHandle,
+pub extern "C" fn wispers_node_connect_quic_async(
+    handle: *mut WispersNodeHandle,
     peer_node_number: c_int,
     ctx: *mut c_void,
     callback: WispersQuicConnectionCallback,
@@ -284,13 +286,13 @@ pub extern "C" fn wispers_activated_node_connect_quic_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let activated_ptr = SendableActivatedPtr(handle);
+    let node_ptr = SendableNodePtr(handle);
 
     runtime::spawn(async move {
-        let wrapper = unsafe { activated_ptr.get() };
+        let wrapper = unsafe { node_ptr.get() };
         let result = match &wrapper.0 {
-            ActivatedImpl::InMemory(activated) => activated.connect_quic(peer_node_number).await,
-            ActivatedImpl::Foreign(activated) => activated.connect_quic(peer_node_number).await,
+            NodeImpl::InMemory(node) => node.connect_quic(peer_node_number).await,
+            NodeImpl::Foreign(node) => node.connect_quic(peer_node_number).await,
         };
 
         match result {

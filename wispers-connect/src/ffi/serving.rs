@@ -1,12 +1,14 @@
 //! FFI bindings for serving sessions.
 
 use super::callbacks::CallbackContext;
+use super::handles::{NodeImpl, WispersNodeHandle};
 use super::p2p::{
     WispersQuicConnectionCallback, WispersQuicConnectionHandle, WispersUdpConnectionCallback,
     WispersUdpConnectionHandle,
 };
 use super::runtime;
 use crate::errors::WispersStatus;
+use crate::node::NodeState;
 use crate::serving::{IncomingConnections, ServingHandle, ServingSession};
 use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
@@ -197,21 +199,21 @@ pub extern "C" fn wispers_incoming_accept_quic_async(
     WispersStatus::Success
 }
 
-// Start serving functions
+// Start serving function
 
-/// Start a serving session for a registered node.
+/// Start a serving session for a node.
 ///
-/// Registered nodes can serve for bootstrapping but cannot accept P2P connections.
-/// The callback receives the serving handle and session (incoming will be NULL).
-/// The registered handle is NOT consumed.
+/// Registered nodes can serve for bootstrapping but cannot accept P2P connections
+/// (incoming will be NULL). Activated nodes receive an incoming connections handle.
+///
+/// Returns INVALID_STATE if the node is in Pending state.
+/// The node handle is NOT consumed.
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_registered_node_start_serving_async(
-    handle: *mut super::handles::WispersRegisteredNodeHandle,
+pub extern "C" fn wispers_node_start_serving_async(
+    handle: *mut WispersNodeHandle,
     ctx: *mut c_void,
     callback: WispersStartServingCallback,
 ) -> WispersStatus {
-    use super::handles::RegisteredImpl;
-
     if handle.is_null() {
         return WispersStatus::NullPointer;
     }
@@ -224,91 +226,19 @@ pub extern "C" fn wispers_registered_node_start_serving_async(
     let wrapper = unsafe { &*handle };
     let ctx = CallbackContext(ctx);
 
-    // Extract what we need before spawning
-    let (hub_addr, registration, root_key) = match &wrapper.0 {
-        RegisteredImpl::InMemory(registered) => (
-            registered.hub_addr(),
-            registered.registration().clone(),
-            get_root_key_registered(registered),
-        ),
-        RegisteredImpl::Foreign(registered) => (
-            registered.hub_addr(),
-            registered.registration().clone(),
-            get_root_key_registered(registered),
-        ),
+    // Extract what we need before spawning based on state
+    let serving_params = match &wrapper.0 {
+        NodeImpl::InMemory(node) => extract_serving_params(node),
+        NodeImpl::Foreign(node) => extract_serving_params(node),
+    };
+
+    let params = match serving_params {
+        Ok(p) => p,
+        Err(status) => return status,
     };
 
     runtime::spawn(async move {
-        let result = start_serving_registered_impl(&hub_addr, &registration, &root_key).await;
-        match result {
-            Ok((serving_handle, session)) => {
-                let h = Box::into_raw(Box::new(WispersServingHandle(serving_handle)));
-                let s = Box::into_raw(Box::new(WispersServingSession(Some(session))));
-                unsafe {
-                    callback(ctx.ptr(), WispersStatus::Success, h, s, std::ptr::null_mut());
-                }
-            }
-            Err(_) => {
-                unsafe {
-                    callback(
-                        ctx.ptr(),
-                        WispersStatus::HubError,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                    );
-                }
-            }
-        }
-    });
-
-    WispersStatus::Success
-}
-
-/// Start a serving session for an activated node.
-///
-/// Activated nodes can accept P2P connections. The callback receives the serving handle,
-/// session, and incoming connections handle.
-/// The activated handle is NOT consumed.
-#[unsafe(no_mangle)]
-pub extern "C" fn wispers_activated_node_start_serving_async(
-    handle: *mut super::handles::WispersActivatedNodeHandle,
-    ctx: *mut c_void,
-    callback: WispersStartServingCallback,
-) -> WispersStatus {
-    use super::handles::ActivatedImpl;
-
-    if handle.is_null() {
-        return WispersStatus::NullPointer;
-    }
-
-    let callback = match callback {
-        Some(cb) => cb,
-        None => return WispersStatus::MissingCallback,
-    };
-
-    let wrapper = unsafe { &*handle };
-    let ctx = CallbackContext(ctx);
-
-    // Extract what we need before spawning
-    let (hub_addr, registration, signing_key, x25519_key) = match &wrapper.0 {
-        ActivatedImpl::InMemory(activated) => (
-            activated.hub_addr(),
-            activated.registration().clone(),
-            activated.signing_key().clone(),
-            get_x25519_key_activated(activated),
-        ),
-        ActivatedImpl::Foreign(activated) => (
-            activated.hub_addr(),
-            activated.registration().clone(),
-            activated.signing_key().clone(),
-            get_x25519_key_activated(activated),
-        ),
-    };
-
-    runtime::spawn(async move {
-        let result =
-            start_serving_activated_impl(&hub_addr, &registration, signing_key, x25519_key).await;
+        let result = start_serving_impl(params).await;
         match result {
             Ok((serving_handle, session, incoming)) => {
                 let h = Box::into_raw(Box::new(WispersServingHandle(serving_handle)));
@@ -471,69 +401,68 @@ pub extern "C" fn wispers_serving_handle_shutdown_async(
 
 // Implementation helpers
 
-async fn start_serving_registered_impl(
-    hub_addr: &str,
-    registration: &crate::types::NodeRegistration,
-    root_key: &[u8; 32],
-) -> Result<(ServingHandle, ServingSession), crate::hub::HubError> {
-    use crate::crypto::SigningKeyPair;
+/// Parameters extracted from a Node for starting a serving session.
+struct ServingParams {
+    hub_addr: String,
+    registration: crate::types::NodeRegistration,
+    signing_key: crate::crypto::SigningKeyPair,
+    /// P2P config - only present for activated nodes
+    p2p_config: Option<crate::serving::P2pConfig>,
+}
+
+fn extract_serving_params<S: crate::storage::NodeStateStore>(
+    node: &crate::node::Node<S>,
+) -> Result<ServingParams, WispersStatus> {
+    let state = node.state();
+    if state == NodeState::Pending {
+        return Err(WispersStatus::InvalidState);
+    }
+
+    let registration = node.registration().ok_or(WispersStatus::InvalidState)?.clone();
+    let hub_addr = node.hub_addr();
+
+    // For registered nodes, derive signing key on demand. For activated nodes, use cached key.
+    let signing_key = node
+        .signing_key()
+        .cloned()
+        .or_else(|| node.derive_signing_key())
+        .ok_or(WispersStatus::InvalidState)?;
+
+    let p2p_config = if state == NodeState::Activated {
+        let x25519_key = node.encryption_key().ok_or(WispersStatus::InvalidState)?.clone();
+        Some(crate::serving::P2pConfig {
+            x25519_key,
+            hub_addr: hub_addr.clone(),
+            registration: registration.clone(),
+        })
+    } else {
+        None
+    };
+
+    Ok(ServingParams {
+        hub_addr,
+        registration,
+        signing_key,
+        p2p_config,
+    })
+}
+
+async fn start_serving_impl(
+    params: ServingParams,
+) -> Result<(ServingHandle, ServingSession, Option<IncomingConnections>), crate::hub::HubError> {
     use crate::hub::HubClient;
     use crate::serving::ServingSession;
 
-    let signing_key = SigningKeyPair::derive_from_root_key(root_key);
-    let mut client = HubClient::connect(hub_addr).await?;
-    let conn = client.start_serving(registration).await?;
-
-    let (handle, session, _incoming) = ServingSession::new(
-        conn,
-        signing_key,
-        registration.connectivity_group_id.clone(),
-        registration.node_number,
-        None, // No P2P for registered nodes
-    );
-
-    Ok((handle, session))
-}
-
-async fn start_serving_activated_impl(
-    hub_addr: &str,
-    registration: &crate::types::NodeRegistration,
-    signing_key: crate::crypto::SigningKeyPair,
-    x25519_key: crate::crypto::X25519KeyPair,
-) -> Result<(ServingHandle, ServingSession, Option<IncomingConnections>), crate::hub::HubError> {
-    use crate::hub::HubClient;
-    use crate::serving::{P2pConfig, ServingSession};
-
-    let mut client = HubClient::connect(hub_addr).await?;
-    let conn = client.start_serving(registration).await?;
-
-    let p2p_config = P2pConfig {
-        x25519_key,
-        hub_addr: hub_addr.to_string(),
-        registration: registration.clone(),
-    };
+    let mut client = HubClient::connect(&params.hub_addr).await?;
+    let conn = client.start_serving(&params.registration).await?;
 
     let (handle, session, incoming) = ServingSession::new(
         conn,
-        signing_key,
-        registration.connectivity_group_id.clone(),
-        registration.node_number,
-        Some(p2p_config),
+        params.signing_key,
+        params.registration.connectivity_group_id.clone(),
+        params.registration.node_number,
+        params.p2p_config,
     );
 
     Ok((handle, session, incoming))
-}
-
-// Accessors using the public methods we added to state types
-
-fn get_root_key_registered<S: crate::storage::NodeStateStore>(
-    registered: &crate::state::RegisteredNodeState<S>,
-) -> [u8; 32] {
-    *registered.root_key_bytes()
-}
-
-fn get_x25519_key_activated<S: crate::storage::NodeStateStore>(
-    activated: &crate::state::ActivatedNode<S>,
-) -> crate::crypto::X25519KeyPair {
-    activated.x25519_key().clone()
 }

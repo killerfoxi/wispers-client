@@ -27,4 +27,4 @@ pub use p2p::{ConnectionState, UdpConnection, P2pError, QuicConnection, QuicStre
 pub use serving::{EndorsingStatus, IncomingConnections, P2pConfig, ServingError, ServingHandle, ServingSession, StatusInfo};
 pub use state::NodeStorage;
 pub use storage::{FileNodeStateStore, InMemoryNodeStateStore, NodeStateStore};
-pub use types::{AuthToken, ConnectivityGroupId, NodeRegistration, ROOT_KEY_LEN};
+pub use types::{AuthToken, ConnectivityGroupId, NodeInfo, NodeRegistration, ROOT_KEY_LEN};

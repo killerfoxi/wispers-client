@@ -269,24 +269,19 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
         .context("activation failed")?;
 
     let reg = node.registration().expect("activated");
-    let roster = node.roster().expect("activated");
     println!("Activation successful!");
     println!("  Connectivity group: {}", reg.connectivity_group_id);
     println!("  Node number: {}", reg.node_number);
-    println!("  Roster has {} nodes", roster.nodes.len());
     Ok(())
 }
 
 async fn nodes(hub_override: Option<&str>, profile: &str) -> Result<()> {
-    use std::collections::HashSet;
-
     let storage = get_storage(hub_override, profile)?;
     let node = storage
         .restore_or_init_node()
         .await
         .context("failed to load node state")?;
 
-    // Get nodes from hub and optionally the roster (if activated)
     let reg = match node.state() {
         NodeState::Pending => {
             anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
@@ -294,46 +289,32 @@ async fn nodes(hub_override: Option<&str>, profile: &str) -> Result<()> {
         _ => node.registration().expect("registered").clone(),
     };
 
-    let hub_nodes = node.list_nodes().await.context("failed to list nodes")?;
-
-    let roster_nodes: HashSet<i32> = if node.state() == NodeState::Activated {
-        node.roster()
-            .expect("activated")
-            .nodes
-            .iter()
-            .filter(|n| !n.revoked)
-            .map(|n| n.node_number)
-            .collect()
-    } else {
-        HashSet::new()
-    };
-
-    let nodes = hub_nodes;
+    let nodes = node.list_nodes().await.context("failed to list nodes")?;
 
     if nodes.is_empty() {
         println!("No nodes in connectivity group.");
     } else {
         println!("Nodes in connectivity group {}:", reg.connectivity_group_id);
-        for node in nodes {
-            let name = if node.name.is_empty() {
+        for info in nodes {
+            let name = if info.name.is_empty() {
                 "(unnamed)".to_string()
             } else {
-                node.name
+                info.name
             };
 
             let mut tags = Vec::new();
-            if node.node_number == reg.node_number {
+            if info.is_self {
                 tags.push("you");
             }
-            if !roster_nodes.is_empty() {
-                if roster_nodes.contains(&node.node_number) {
+            if let Some(activated) = info.is_activated {
+                if activated {
                     tags.push("activated");
                 } else {
                     tags.push("not activated");
                 }
             }
 
-            let last_seen = format_last_seen(node.last_seen_at_millis);
+            let last_seen = format_last_seen(info.last_seen_at_millis);
 
             let tags_str = if tags.is_empty() {
                 String::new()
@@ -341,7 +322,7 @@ async fn nodes(hub_override: Option<&str>, profile: &str) -> Result<()> {
                 format!(" ({})", tags.join(", "))
             };
 
-            println!("  {}: {}{} - {}", node.node_number, name, tags_str, last_seen);
+            println!("  {}: {}{} - {}", info.node_number, name, tags_str, last_seen);
         }
     }
     Ok(())
