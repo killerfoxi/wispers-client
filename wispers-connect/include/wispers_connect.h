@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,7 +17,7 @@ typedef enum {
     WISPERS_STATUS_STORE_ERROR = 3,
     WISPERS_STATUS_ALREADY_REGISTERED = 4,
     WISPERS_STATUS_NOT_REGISTERED = 5,
-    WISPERS_STATUS_UNEXPECTED_STAGE = 6,
+    WISPERS_STATUS_UNEXPECTED_STAGE = 6,  // Deprecated, use INVALID_STATE
     WISPERS_STATUS_NOT_FOUND = 7,
     WISPERS_STATUS_BUFFER_TOO_SMALL = 8,
     WISPERS_STATUS_MISSING_CALLBACK = 9,
@@ -25,20 +26,26 @@ typedef enum {
     WISPERS_STATUS_HUB_ERROR = 12,
     WISPERS_STATUS_CONNECTION_FAILED = 13,
     WISPERS_STATUS_TIMEOUT = 14,
+    WISPERS_STATUS_INVALID_STATE = 15,
 } WispersStatus;
 
-// Node state stages.
+// Node state values.
 typedef enum {
-    WISPERS_STAGE_PENDING = 0,
-    WISPERS_STAGE_REGISTERED = 1,
-    WISPERS_STAGE_ACTIVATED = 2,
-} WispersStage;
+    WISPERS_NODE_STATE_PENDING = 0,
+    WISPERS_NODE_STATE_REGISTERED = 1,
+    WISPERS_NODE_STATE_ACTIVATED = 2,
+} WispersNodeState;
+
+// Activation status values for WispersNode.
+typedef enum {
+    WISPERS_ACTIVATION_UNKNOWN = 0,       // Caller is not activated, can't see roster
+    WISPERS_ACTIVATION_NOT_ACTIVATED = 1, // Node is registered but not in roster
+    WISPERS_ACTIVATION_ACTIVATED = 2,     // Node is in roster and not revoked
+} WispersActivationStatus;
 
 // Forward declarations for opaque handles.
 typedef struct WispersNodeStorageHandle WispersNodeStorageHandle;
-typedef struct WispersPendingNodeHandle WispersPendingNodeHandle;
-typedef struct WispersRegisteredNodeHandle WispersRegisteredNodeHandle;
-typedef struct WispersActivatedNodeHandle WispersActivatedNodeHandle;
+typedef struct WispersNodeHandle WispersNodeHandle;
 typedef struct WispersServingHandle WispersServingHandle;
 typedef struct WispersServingSession WispersServingSession;
 typedef struct WispersIncomingConnections WispersIncomingConnections;
@@ -69,31 +76,14 @@ typedef struct {
 // Basic completion callback (no result value).
 typedef void (*WispersCallback)(void *ctx, WispersStatus status);
 
-// Callback for restore_or_init, which restores the node at its current stage
-// (pending, registered, or activated). `stage` will be set to the appropriate
-// enum value and the matching handle will be filled in. Exactly one handle will
-// be non-null on success.
+// Callback for restore_or_init. Returns a single node handle and its current state.
+// The handle can be used for all operations; state-inappropriate operations
+// will return WISPERS_STATUS_INVALID_STATE.
 typedef void (*WispersInitCallback)(
     void *ctx,
     WispersStatus status,
-    WispersStage stage,
-    WispersPendingNodeHandle *pending,
-    WispersRegisteredNodeHandle *registered,
-    WispersActivatedNodeHandle *activated
-);
-
-// Callback that receives a registered state handle.
-typedef void (*WispersRegisteredCallback)(
-    void *ctx,
-    WispersStatus status,
-    WispersRegisteredNodeHandle *handle
-);
-
-// Callback that receives an activated node handle.
-typedef void (*WispersActivatedCallback)(
-    void *ctx,
-    WispersStatus status,
-    WispersActivatedNodeHandle *handle
+    WispersNodeHandle *handle,
+    WispersNodeState state
 );
 
 //------------------------------------------------------------------------------
@@ -103,7 +93,9 @@ typedef void (*WispersActivatedCallback)(
 // Information about a node in the connectivity group.
 typedef struct {
     int32_t node_number;
-    char *name;              // Owned, freed by wispers_node_list_free()
+    char *name;                          // Owned, freed by wispers_node_list_free()
+    bool is_self;                        // Whether this is the current node
+    int32_t activation_status;           // WispersActivationStatus value
     int64_t last_seen_at_millis;
 } WispersNode;
 
@@ -209,7 +201,7 @@ WispersStatus wispers_storage_override_hub_addr(
 );
 
 // Restore or initialize node state asynchronously.
-// On success, callback receives the stage and exactly one non-null handle.
+// On success, callback receives a single node handle and its current state.
 // The storage handle remains valid and is NOT consumed.
 // Returns SUCCESS immediately if the async operation was started.
 WispersStatus wispers_storage_restore_or_init_async(
@@ -219,117 +211,99 @@ WispersStatus wispers_storage_restore_or_init_async(
 );
 
 //------------------------------------------------------------------------------
-// Pending state
+// Node operations (unified handle)
 //------------------------------------------------------------------------------
 
-void wispers_pending_node_free(WispersPendingNodeHandle *handle);
+// Free a node handle.
+void wispers_node_free(WispersNodeHandle *handle);
 
-// Logout a pending node (delete local state).
-// The pending handle is CONSUMED and must not be used afterward.
+// Get the current state of the node.
+WispersNodeState wispers_node_state(WispersNodeHandle *handle);
+
+// Register the node with the hub using a registration token.
+// Requires: Pending state. Returns INVALID_STATE if not Pending.
+// The node handle is NOT consumed - it transitions to Registered state on success.
 // Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_pending_node_logout_async(
-    WispersPendingNodeHandle *handle,
-    void *ctx,
-    WispersCallback callback
-);
-
-// Manual registration completion (for testing or when registration was done out-of-band).
-WispersStatus wispers_pending_node_complete_registration(
-    WispersPendingNodeHandle *handle,
-    const char *connectivity_group_id,
-    int node_number,
-    const char *auth_token,
-    WispersRegisteredNodeHandle **out_registered
-);
-
-// Register the pending node with the hub using a registration token.
-// On success, callback receives the registered state handle.
-// The pending handle is CONSUMED and must not be used afterward.
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_pending_node_register_async(
-    WispersPendingNodeHandle *handle,
+WispersStatus wispers_node_register_async(
+    WispersNodeHandle *handle,
     const char *token,
     void *ctx,
-    WispersRegisteredCallback callback
-);
-
-
-//------------------------------------------------------------------------------
-// Registered state
-//------------------------------------------------------------------------------
-
-void wispers_registered_node_free(WispersRegisteredNodeHandle *handle);
-
-// Logout a registered node (deregister from hub, then delete local state).
-// The registered handle is CONSUMED and must not be used afterward.
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_registered_node_logout_async(
-    WispersRegisteredNodeHandle *handle,
-    void *ctx,
     WispersCallback callback
 );
 
-// Activate a registered node by pairing with an endorser.
+// Activate the node by pairing with an endorser.
 // The pairing code format is "node_number-secret" (e.g., "1-abc123xyz0").
-// On success, callback receives the activated node handle.
-// The registered handle is CONSUMED and must not be used afterward.
+// Requires: Registered state. Returns INVALID_STATE if not Registered.
+// The node handle is NOT consumed - it transitions to Activated state on success.
 // Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_registered_node_activate_async(
-    WispersRegisteredNodeHandle *handle,
+WispersStatus wispers_node_activate_async(
+    WispersNodeHandle *handle,
     const char *pairing_code,
     void *ctx,
-    WispersActivatedCallback callback
+    WispersCallback callback
 );
 
-// List all nodes in the connectivity group.
-// The registered handle is NOT consumed and remains valid after this call.
-// On success, callback receives a WispersNodeList that must be freed.
+// Logout the node (delete local state, deregister from hub if registered,
+// revoke from roster if activated).
+// The node handle is CONSUMED by this call and must not be used afterward.
 // Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_registered_node_list_nodes_async(
-    WispersRegisteredNodeHandle *handle,
-    void *ctx,
-    WispersNodeListCallback callback
-);
-
-//------------------------------------------------------------------------------
-// Activated node
-//------------------------------------------------------------------------------
-
-void wispers_activated_node_free(WispersActivatedNodeHandle *handle);
-
-// Logout an activated node (self-revoke from roster, deregister from hub, delete local state).
-// The activated handle is CONSUMED and must not be used afterward.
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_activated_node_logout_async(
-    WispersActivatedNodeHandle *handle,
+WispersStatus wispers_node_logout_async(
+    WispersNodeHandle *handle,
     void *ctx,
     WispersCallback callback
 );
 
 // List all nodes in the connectivity group.
-// The activated handle is NOT consumed and remains valid after this call.
+// Requires: Registered or Activated state. Returns INVALID_STATE if Pending.
+// The node handle is NOT consumed and remains valid after this call.
 // On success, callback receives a WispersNodeList that must be freed.
 // Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_activated_node_list_nodes_async(
-    WispersActivatedNodeHandle *handle,
+WispersStatus wispers_node_list_nodes_async(
+    WispersNodeHandle *handle,
     void *ctx,
     WispersNodeListCallback callback
+);
+
+// Start a serving session.
+// Requires: Registered or Activated state. Returns INVALID_STATE if Pending.
+// - Registered nodes can serve for bootstrapping but cannot accept P2P connections.
+// - Activated nodes can accept P2P connections.
+// The node handle is NOT consumed.
+// On success, callback receives serving_handle, session, and incoming (NULL for registered).
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_node_start_serving_async(
+    WispersNodeHandle *handle,
+    void *ctx,
+    WispersStartServingCallback callback
+);
+
+// Connect to a peer node using UDP transport.
+// Requires: Activated state. Returns INVALID_STATE if not Activated.
+// The node handle is NOT consumed.
+// On success, callback receives the UDP connection handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_node_connect_udp_async(
+    WispersNodeHandle *handle,
+    int32_t peer_node_number,
+    void *ctx,
+    WispersUdpConnectionCallback callback
+);
+
+// Connect to a peer node using QUIC transport.
+// Requires: Activated state. Returns INVALID_STATE if not Activated.
+// The node handle is NOT consumed.
+// On success, callback receives the QUIC connection handle.
+// Returns SUCCESS immediately if the async operation was started.
+WispersStatus wispers_node_connect_quic_async(
+    WispersNodeHandle *handle,
+    int32_t peer_node_number,
+    void *ctx,
+    WispersQuicConnectionCallback callback
 );
 
 //------------------------------------------------------------------------------
 // P2P UDP Connections
 //------------------------------------------------------------------------------
-
-// Connect to a peer node using UDP transport.
-// The activated handle is NOT consumed.
-// On success, callback receives the UDP connection handle.
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_activated_node_connect_udp_async(
-    WispersActivatedNodeHandle *handle,
-    int32_t peer_node_number,
-    void *ctx,
-    WispersUdpConnectionCallback callback
-);
 
 // Send data over a UDP connection.
 // This is a synchronous, non-blocking operation.
@@ -361,17 +335,6 @@ void wispers_udp_connection_free(WispersUdpConnectionHandle *handle);
 //------------------------------------------------------------------------------
 // P2P QUIC Connections
 //------------------------------------------------------------------------------
-
-// Connect to a peer node using QUIC transport.
-// The activated handle is NOT consumed.
-// On success, callback receives the QUIC connection handle.
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_activated_node_connect_quic_async(
-    WispersActivatedNodeHandle *handle,
-    int32_t peer_node_number,
-    void *ctx,
-    WispersQuicConnectionCallback callback
-);
 
 // Open a new bidirectional stream on a QUIC connection.
 // The connection handle is NOT consumed.
@@ -463,28 +426,6 @@ WispersStatus wispers_quic_stream_shutdown_async(
 //------------------------------------------------------------------------------
 // Serving
 //------------------------------------------------------------------------------
-
-// Start a serving session for a registered node.
-// Registered nodes can serve for bootstrapping but cannot accept P2P connections.
-// The registered handle is NOT consumed.
-// On success, callback receives serving_handle and session (incoming will be NULL).
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_registered_node_start_serving_async(
-    WispersRegisteredNodeHandle *handle,
-    void *ctx,
-    WispersStartServingCallback callback
-);
-
-// Start a serving session for an activated node.
-// Activated nodes can accept P2P connections.
-// The activated handle is NOT consumed.
-// On success, callback receives serving_handle, session, and incoming connections handle.
-// Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_activated_node_start_serving_async(
-    WispersActivatedNodeHandle *handle,
-    void *ctx,
-    WispersStartServingCallback callback
-);
 
 // Generate a pairing code for endorsing a new node.
 // The serving handle is NOT consumed.
