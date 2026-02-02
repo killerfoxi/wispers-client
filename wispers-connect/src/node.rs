@@ -16,7 +16,7 @@ use crate::roster::{
 };
 use crate::state::{RuntimeConfig, SharedConfig};
 use crate::storage::SharedStore;
-use crate::types::{NodeInfo, NodeRegistration, PersistedNodeState};
+use crate::types::{ConnectivityGroupId, NodeInfo, NodeRegistration, PersistedNodeState};
 use prost::Message;
 
 /// The state a node is currently in (state machine state, not persisted state).
@@ -135,13 +135,21 @@ impl Node {
     }
 
     /// Get the registration info. Returns None if not registered.
-    pub fn registration(&self) -> Option<&NodeRegistration> {
+    pub(crate) fn registration(&self) -> Option<&NodeRegistration> {
         self.persisted.registration.as_ref()
     }
 
     /// Get the node's number. Returns None if not registered.
     pub fn node_number(&self) -> Option<i32> {
         self.persisted.registration.as_ref().map(|r| r.node_number)
+    }
+
+    /// Get the connectivity group ID. Returns None if not registered.
+    pub fn connectivity_group_id(&self) -> Option<&ConnectivityGroupId> {
+        self.persisted
+            .registration
+            .as_ref()
+            .map(|r| &r.connectivity_group_id)
     }
 
     /// Get the root key bytes (internal use only).

@@ -204,11 +204,10 @@ async fn register(hub_override: Option<&str>, profile: &str, token: &str) -> Res
     match node.state() {
         NodeState::Pending => {}
         NodeState::Registered | NodeState::Activated => {
-            let reg = node.registration().expect("registered");
             anyhow::bail!(
                 "Already registered as node {} in group {}. Use 'wconnect logout' to clear.",
-                reg.node_number,
-                reg.connectivity_group_id
+                node.node_number().unwrap(),
+                node.connectivity_group_id().unwrap()
             );
         }
     }
@@ -219,10 +218,9 @@ async fn register(hub_override: Option<&str>, profile: &str, token: &str) -> Res
         .await
         .context("registration failed")?;
 
-    let reg = node.registration().expect("just registered");
     println!("Registration successful!");
-    println!("  Connectivity group: {}", reg.connectivity_group_id);
-    println!("  Node number: {}", reg.node_number);
+    println!("  Connectivity group: {}", node.connectivity_group_id().unwrap());
+    println!("  Node number: {}", node.node_number().unwrap());
     Ok(())
 }
 
@@ -241,11 +239,10 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
         }
         NodeState::Registered => {}
         NodeState::Activated => {
-            let reg = node.registration().expect("activated");
             anyhow::bail!(
                 "Already activated as node {} in group {}.",
-                reg.node_number,
-                reg.connectivity_group_id
+                node.node_number().unwrap(),
+                node.connectivity_group_id().unwrap()
             );
         }
     }
@@ -254,7 +251,7 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
     let parsed_code = PairingCode::parse(pairing_code)
         .context("invalid pairing code format")?;
 
-    let our_node_number = node.registration().expect("registered").node_number;
+    let our_node_number = node.node_number().unwrap();
     if parsed_code.node_number == our_node_number {
         anyhow::bail!(
             "Cannot activate using your own pairing code (self-endorsement). \
@@ -268,10 +265,9 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
         .await
         .context("activation failed")?;
 
-    let reg = node.registration().expect("activated");
     println!("Activation successful!");
-    println!("  Connectivity group: {}", reg.connectivity_group_id);
-    println!("  Node number: {}", reg.node_number);
+    println!("  Connectivity group: {}", node.connectivity_group_id().unwrap());
+    println!("  Node number: {}", node.node_number().unwrap());
     Ok(())
 }
 
@@ -282,19 +278,17 @@ async fn nodes(hub_override: Option<&str>, profile: &str) -> Result<()> {
         .await
         .context("failed to load node state")?;
 
-    let reg = match node.state() {
-        NodeState::Pending => {
-            anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
-        }
-        _ => node.registration().expect("registered").clone(),
-    };
+    if node.state() == NodeState::Pending {
+        anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
+    }
 
+    let cg_id = node.connectivity_group_id().unwrap();
     let nodes = node.list_nodes().await.context("failed to list nodes")?;
 
     if nodes.is_empty() {
         println!("No nodes in connectivity group.");
     } else {
-        println!("Nodes in connectivity group {}:", reg.connectivity_group_id);
+        println!("Nodes in connectivity group {}:", cg_id);
         for info in nodes {
             let name = if info.name.is_empty() {
                 "(unnamed)".to_string()
@@ -374,18 +368,20 @@ async fn status(hub_override: Option<&str>, profile: &str) -> Result<()> {
             println!("Not registered.");
         }
         NodeState::Registered => {
-            let reg = node.registration().expect("registered");
+            let cg_id = node.connectivity_group_id().unwrap();
+            let node_num = node.node_number().unwrap();
             println!("Registered (not yet activated):");
-            println!("  Connectivity group: {}", reg.connectivity_group_id);
-            println!("  Node number: {}", reg.node_number);
-            print_daemon_status(&reg.connectivity_group_id.to_string(), reg.node_number).await;
+            println!("  Connectivity group: {}", cg_id);
+            println!("  Node number: {}", node_num);
+            print_daemon_status(&cg_id.to_string(), node_num).await;
         }
         NodeState::Activated => {
-            let reg = node.registration().expect("activated");
+            let cg_id = node.connectivity_group_id().unwrap();
+            let node_num = node.node_number().unwrap();
             println!("Activated:");
-            println!("  Connectivity group: {}", reg.connectivity_group_id);
-            println!("  Node number: {}", reg.node_number);
-            print_daemon_status(&reg.connectivity_group_id.to_string(), reg.node_number).await;
+            println!("  Connectivity group: {}", cg_id);
+            println!("  Node number: {}", node_num);
+            print_daemon_status(&cg_id.to_string(), node_num).await;
         }
     }
     Ok(())
@@ -445,15 +441,11 @@ async fn serve(hub_override: Option<&str>, profile: &str) -> Result<()> {
         .context("failed to load node state")?;
 
     // Get registration info first (before connecting to hub)
-    let (cg_id, node_number) = match node.state() {
-        NodeState::Pending => {
-            anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
-        }
-        _ => {
-            let reg = node.registration().expect("registered");
-            (reg.connectivity_group_id.to_string(), reg.node_number)
-        }
-    };
+    if node.state() == NodeState::Pending {
+        anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
+    }
+    let cg_id = node.connectivity_group_id().unwrap().to_string();
+    let node_number = node.node_number().unwrap();
 
     // Start UDS daemon server first (so it's available while connecting to hub)
     let daemon = daemon::DaemonServer::bind(&cg_id, node_number)
@@ -774,15 +766,12 @@ async fn get_pairing_code(hub_override: Option<&str>, profile: &str) -> Result<(
         .await
         .context("failed to load node state")?;
 
-    let reg = match node.state() {
-        NodeState::Pending => {
-            anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
-        }
-        _ => node.registration().expect("registered"),
-    };
+    if node.state() == NodeState::Pending {
+        anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
+    }
 
-    let cg_id = reg.connectivity_group_id.to_string();
-    let node_number = reg.node_number;
+    let cg_id = node.connectivity_group_id().unwrap().to_string();
+    let node_number = node.node_number().unwrap();
 
     // Connect to daemon
     let mut client = daemon::DaemonClient::connect(&cg_id, node_number)
@@ -827,7 +816,7 @@ async fn ping(hub_override: Option<&str>, profile: &str, target_node: i32, use_q
         NodeState::Activated => {}
     }
 
-    let our_node = node.registration().expect("activated").node_number;
+    let our_node = node.node_number().unwrap();
     if target_node == our_node {
         anyhow::bail!("Cannot ping yourself (node {}).", our_node);
     }
@@ -962,7 +951,7 @@ async fn forward(
         NodeState::Activated => {}
     }
 
-    let our_node = node.registration().expect("activated").node_number;
+    let our_node = node.node_number().unwrap();
     if target_node == our_node {
         anyhow::bail!("Cannot forward to yourself (node {}).", our_node);
     }
