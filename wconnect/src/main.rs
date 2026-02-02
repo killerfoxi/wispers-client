@@ -34,6 +34,8 @@ enum Command {
         /// The pairing code from the endorser (format: "node_number-secret")
         pairing_code: String,
     },
+    /// Get a pairing code to endorse a new node (requires running daemon)
+    GetPairingCode,
     /// Clear stored credentials and state
     Logout,
     /// List nodes in the connectivity group
@@ -50,8 +52,6 @@ enum Command {
         #[arg(long)]
         stop: bool,
     },
-    /// Get a pairing code to endorse a new node (requires running daemon)
-    GetPairingCode,
     /// Ping another node via P2P connection
     Ping {
         /// The node number to ping
@@ -190,11 +190,11 @@ async fn async_main(command: Command, hub_override: Option<String>, profile: Str
     match command {
         Command::Register { token } => register(hub_override, profile, &token).await,
         Command::Activate { pairing_code } => activate(hub_override, profile, &pairing_code).await,
+        Command::GetPairingCode => get_pairing_code(hub_override, profile).await,
         Command::Logout => logout(hub_override, profile).await,
         Command::Nodes => nodes(hub_override, profile).await,
         Command::Status => status(hub_override, profile).await,
         Command::Serve { daemon: _, stop: _ } => serving::serve(hub_override, profile).await,
-        Command::GetPairingCode => get_pairing_code(hub_override, profile).await,
         Command::Ping { node_number, quic } => p2p::ping(hub_override, profile, node_number, quic).await,
         Command::Forward { local_port, node, remote_port } => {
             p2p::forward(hub_override, profile, local_port, node, remote_port).await
@@ -277,6 +277,46 @@ async fn activate(hub_override: Option<&str>, profile: &str, pairing_code: &str)
     println!("Activation successful!");
     println!("  Connectivity group: {}", node.connectivity_group_id().unwrap());
     println!("  Node number: {}", node.node_number().unwrap());
+    Ok(())
+}
+
+async fn get_pairing_code(hub_override: Option<&str>, profile: &str) -> Result<()> {
+    let storage = get_storage(hub_override, profile)?;
+    let node = storage
+        .restore_or_init_node()
+        .await
+        .context("failed to load node state")?;
+
+    if node.state() == NodeState::Pending {
+        anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
+    }
+
+    let cg_id = node.connectivity_group_id().unwrap().to_string();
+    let node_number = node.node_number().unwrap();
+
+    // Connect to daemon
+    let mut client = daemon::DaemonClient::connect(&cg_id, node_number)
+        .await
+        .context("Daemon not running. Start it with 'wconnect serve' first.")?;
+
+    // Request pairing code
+    let response = client
+        .request(&daemon::Request::GetPairingCode)
+        .await
+        .context("failed to communicate with daemon")?;
+
+    match response {
+        daemon::Response::Success { data: daemon::ResponseData::PairingCode(p), .. } => {
+            println!("{}", p.pairing_code);
+        }
+        daemon::Response::Error { error, .. } => {
+            anyhow::bail!("{}", error);
+        }
+        _ => {
+            anyhow::bail!("unexpected response from daemon");
+        }
+    }
+
     Ok(())
 }
 
@@ -422,46 +462,4 @@ async fn print_daemon_status(cg_id: &str, node_number: i32) {
             }
         }
     }
-}
-
-//-- Pairing -------------------------------------------------------------------
-
-async fn get_pairing_code(hub_override: Option<&str>, profile: &str) -> Result<()> {
-    let storage = get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
-
-    if node.state() == NodeState::Pending {
-        anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
-    }
-
-    let cg_id = node.connectivity_group_id().unwrap().to_string();
-    let node_number = node.node_number().unwrap();
-
-    // Connect to daemon
-    let mut client = daemon::DaemonClient::connect(&cg_id, node_number)
-        .await
-        .context("Daemon not running. Start it with 'wconnect serve' first.")?;
-
-    // Request pairing code
-    let response = client
-        .request(&daemon::Request::GetPairingCode)
-        .await
-        .context("failed to communicate with daemon")?;
-
-    match response {
-        daemon::Response::Success { data: daemon::ResponseData::PairingCode(p), .. } => {
-            println!("{}", p.pairing_code);
-        }
-        daemon::Response::Error { error, .. } => {
-            anyhow::bail!("{}", error);
-        }
-        _ => {
-            anyhow::bail!("unexpected response from daemon");
-        }
-    }
-
-    Ok(())
 }
