@@ -1,6 +1,5 @@
 use crate::errors::{NodeStateError, WispersStatus};
-use crate::node::Node;
-use crate::state::NodeStorage;
+use crate::node::{Node, NodeStorage};
 use crate::storage::StorageError;
 
 pub struct WispersNodeStorageHandle(pub(crate) NodeStorage);
