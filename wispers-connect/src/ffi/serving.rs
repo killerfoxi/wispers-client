@@ -1,7 +1,6 @@
 //! FFI bindings for serving sessions.
 
-use super::callbacks::CallbackContext;
-use super::handles::WispersNodeHandle;
+use super::types::{CallbackContext, WispersCallback, WispersNodeHandle};
 use super::p2p::{
     WispersQuicConnectionCallback, WispersQuicConnectionHandle, WispersUdpConnectionCallback,
     WispersUdpConnectionHandle,
@@ -324,7 +323,7 @@ pub extern "C" fn wispers_serving_handle_generate_pairing_code_async(
 pub extern "C" fn wispers_serving_session_run_async(
     handle: *mut WispersServingSession,
     ctx: *mut c_void,
-    callback: super::callbacks::WispersCallback,
+    callback: WispersCallback,
 ) -> WispersStatus {
     if handle.is_null() {
         return WispersStatus::NullPointer;
@@ -367,7 +366,7 @@ pub extern "C" fn wispers_serving_session_run_async(
 pub extern "C" fn wispers_serving_handle_shutdown_async(
     handle: *mut WispersServingHandle,
     ctx: *mut c_void,
-    callback: super::callbacks::WispersCallback,
+    callback: WispersCallback,
 ) -> WispersStatus {
     if handle.is_null() {
         return WispersStatus::NullPointer;

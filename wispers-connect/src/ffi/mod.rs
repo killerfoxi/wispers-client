@@ -1,27 +1,37 @@
-mod callbacks;
-mod handles;
-mod helpers;
-mod manager;
-mod nodes;
+//! FFI bindings for the wispers-connect library.
+//!
+//! Module structure:
+//! - `types`: All FFI types, callbacks, handle wrappers, and memory management
+//! - `node`: Storage and node lifecycle operations
+//! - `serving`: Serving session operations
+//! - `p2p`: P2P connection operations
+//! - `runtime`: Tokio runtime management
+
+mod node;
 mod p2p;
 pub(crate) mod runtime;
 mod serving;
+mod types;
 
-pub use callbacks::{WispersCallback, WispersInitCallback, WispersNodeListCallback, WispersNodeState};
-pub use handles::{WispersNodeHandle, WispersNodeStorageHandle};
-pub use helpers::{
-    wispers_node_list_free, wispers_registration_info_free, wispers_string_free, WispersNode,
-    WispersNodeList, WispersRegistrationInfo,
+// Re-export types
+pub use types::{
+    wispers_node_list_free, wispers_registration_info_free, wispers_string_free,
+    CallbackContext, WispersCallback, WispersInitCallback, WispersNode, WispersNodeHandle,
+    WispersNodeList, WispersNodeListCallback, WispersNodeState, WispersNodeStorageHandle,
+    WispersRegistrationInfo, WISPERS_ACTIVATION_ACTIVATED, WISPERS_ACTIVATION_NOT_ACTIVATED,
+    WISPERS_ACTIVATION_UNKNOWN,
 };
-pub use manager::{
+
+// Re-export node functions
+pub use node::{
+    wispers_node_activate_async, wispers_node_free, wispers_node_list_nodes_async,
+    wispers_node_logout_async, wispers_node_register_async, wispers_node_state,
     wispers_storage_free, wispers_storage_new_in_memory, wispers_storage_new_with_callbacks,
     wispers_storage_override_hub_addr, wispers_storage_read_registration,
     wispers_storage_restore_or_init_async,
 };
-pub use nodes::{
-    wispers_node_activate_async, wispers_node_free, wispers_node_list_nodes_async,
-    wispers_node_logout_async, wispers_node_register_async, wispers_node_state,
-};
+
+// Re-export serving functions
 pub use serving::{
     wispers_incoming_accept_quic_async, wispers_incoming_accept_udp_async,
     wispers_incoming_connections_free, wispers_node_start_serving_async,
@@ -30,6 +40,8 @@ pub use serving::{
     wispers_serving_session_run_async, WispersIncomingConnections, WispersPairingCodeCallback,
     WispersServingHandle, WispersServingSession, WispersStartServingCallback,
 };
+
+// Re-export P2P functions
 pub use p2p::{
     wispers_node_connect_quic_async, wispers_node_connect_udp_async,
     wispers_quic_connection_accept_stream_async, wispers_quic_connection_close_async,

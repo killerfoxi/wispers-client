@@ -1,7 +1,6 @@
 //! FFI bindings for P2P connections.
 
-use super::callbacks::CallbackContext;
-use super::handles::WispersNodeHandle;
+use super::types::{CallbackContext, WispersCallback, WispersNodeHandle};
 use super::runtime;
 use crate::errors::WispersStatus;
 use crate::p2p::{QuicConnection, QuicStream, UdpConnection};
@@ -403,7 +402,7 @@ pub extern "C" fn wispers_quic_connection_accept_stream_async(
 pub extern "C" fn wispers_quic_connection_close_async(
     handle: *mut WispersQuicConnectionHandle,
     ctx: *mut c_void,
-    callback: super::callbacks::WispersCallback,
+    callback: WispersCallback,
 ) -> WispersStatus {
     if handle.is_null() {
         return WispersStatus::NullPointer;
@@ -453,7 +452,7 @@ pub extern "C" fn wispers_quic_stream_write_async(
     data: *const u8,
     len: usize,
     ctx: *mut c_void,
-    callback: super::callbacks::WispersCallback,
+    callback: WispersCallback,
 ) -> WispersStatus {
     if handle.is_null() || data.is_null() {
         return WispersStatus::NullPointer;
@@ -546,7 +545,7 @@ pub extern "C" fn wispers_quic_stream_read_async(
 pub extern "C" fn wispers_quic_stream_finish_async(
     handle: *mut WispersQuicStreamHandle,
     ctx: *mut c_void,
-    callback: super::callbacks::WispersCallback,
+    callback: WispersCallback,
 ) -> WispersStatus {
     if handle.is_null() {
         return WispersStatus::NullPointer;
@@ -589,7 +588,7 @@ pub extern "C" fn wispers_quic_stream_finish_async(
 pub extern "C" fn wispers_quic_stream_shutdown_async(
     handle: *mut WispersQuicStreamHandle,
     ctx: *mut c_void,
-    callback: super::callbacks::WispersCallback,
+    callback: WispersCallback,
 ) -> WispersStatus {
     if handle.is_null() {
         return WispersStatus::NullPointer;
