@@ -4,8 +4,9 @@
 //! to access web servers running on nodes in the connectivity group using
 //! hostnames like `http://3.wispers.link/`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,6 +19,44 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Interval for checking and cleaning up idle connections.
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Timeout for QUIC operations (connecting, forwarding).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Proxy-specific errors that map to HTTP status codes.
+#[derive(Debug)]
+enum ProxyError {
+    /// 400 Bad Request - malformed request
+    BadRequest(String),
+    /// 403 Forbidden - non-wispers.link host
+    Forbidden(String),
+    /// 502 Bad Gateway - upstream error
+    BadGateway(String),
+    /// 504 Gateway Timeout - upstream timeout
+    GatewayTimeout(String),
+}
+
+impl fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProxyError::BadRequest(msg) => write!(f, "{}", msg),
+            ProxyError::Forbidden(msg) => write!(f, "{}", msg),
+            ProxyError::BadGateway(msg) => write!(f, "{}", msg),
+            ProxyError::GatewayTimeout(msg) => write!(f, "{}", msg),
+        }
+    }
+}
+
+impl ProxyError {
+    fn status_code(&self) -> u16 {
+        match self {
+            ProxyError::BadRequest(_) => 400,
+            ProxyError::Forbidden(_) => 403,
+            ProxyError::BadGateway(_) => 502,
+            ProxyError::GatewayTimeout(_) => 504,
+        }
+    }
+}
 
 /// Run the HTTP proxy server.
 pub async fn run(hub_override: Option<&str>, profile: &str, bind_addr: &str) -> Result<()> {
@@ -188,19 +227,27 @@ async fn handle_connection(
     let mut request_count = 0;
 
     loop {
-        // Read the HTTP request
-        let request = match read_request(&mut stream).await {
-            Ok(Some(req)) => req,
-            Ok(None) => {
+        // Read HTTP request bytes
+        let buf = match read_request_bytes(&mut stream).await {
+            Ok(ReadResult::Data(buf)) => buf,
+            Ok(ReadResult::Closed) => {
                 // Client closed connection gracefully
                 break;
             }
             Err(e) => {
                 if request_count == 0 {
-                    // First request failed - report error
-                    eprintln!("  Request read error: {}", e);
+                    // First request - send error response
+                    send_proxy_error(&mut stream, &e).await?;
                 }
-                // Otherwise client just closed after previous request
+                break;
+            }
+        };
+
+        // Parse the request
+        let request = match parse_request(&buf) {
+            Ok(req) => req,
+            Err(e) => {
+                send_proxy_error(&mut stream, &e).await?;
                 break;
             }
         };
@@ -214,20 +261,45 @@ async fn handle_connection(
             request.target.path, keep_alive
         );
 
-        // Get or create QUIC connection to target node
-        let quic_conn = match pool.get_or_connect(&node, request.target.node_number).await {
-            Ok(conn) => conn,
-            Err(e) => {
-                send_error(&mut stream, 502, &format!("Failed to connect to node: {}", e)).await?;
+        // Get or create QUIC connection to target node (with timeout)
+        let quic_conn = match tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            pool.get_or_connect(&node, request.target.node_number),
+        )
+        .await
+        {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
+                let err = ProxyError::BadGateway(format!("failed to connect to node: {}", e));
+                send_proxy_error(&mut stream, &err).await?;
+                break;
+            }
+            Err(_) => {
+                let err = ProxyError::GatewayTimeout("connection to node timed out".to_string());
+                send_proxy_error(&mut stream, &err).await?;
                 break;
             }
         };
 
-        // Forward the request
-        if let Err(e) = forward_request(&mut stream, &quic_conn, &request).await {
-            eprintln!("  Forward error: {}", e);
-            // Don't send error response here - we may have already started sending the response
-            break;
+        // Forward the request (with timeout)
+        match tokio::time::timeout(
+            REQUEST_TIMEOUT,
+            forward_request(&mut stream, &quic_conn, &request),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                eprintln!("  Forward error: {}", e);
+                // Don't send error response - we may have already started sending the response
+                break;
+            }
+            Err(_) => {
+                // Timeout - try to send error if we haven't started the response
+                let err = ProxyError::GatewayTimeout("request timed out".to_string());
+                let _ = send_proxy_error(&mut stream, &err).await;
+                break;
+            }
         }
 
         // If not keep-alive, close the connection
@@ -247,24 +319,36 @@ async fn handle_connection(
     Ok(())
 }
 
-/// Read and parse an HTTP request from the stream.
-/// Returns Ok(None) if the client closed the connection gracefully.
-async fn read_request(stream: &mut TcpStream) -> Result<Option<ParsedRequest>> {
+/// Result of reading HTTP request bytes from the stream.
+enum ReadResult {
+    /// Got complete request bytes
+    Data(Vec<u8>),
+    /// Client closed connection gracefully (no data)
+    Closed,
+}
+
+/// Read HTTP request bytes from the stream.
+async fn read_request_bytes(stream: &mut TcpStream) -> Result<ReadResult, ProxyError> {
     let mut buf = vec![0u8; 8192];
     let mut total_read = 0;
 
     loop {
         if total_read >= buf.len() {
-            bail!("Request too large");
+            return Err(ProxyError::BadRequest("request too large".to_string()));
         }
 
-        let n = stream.read(&mut buf[total_read..]).await?;
+        let n = stream.read(&mut buf[total_read..]).await.map_err(|e| {
+            ProxyError::BadRequest(format!("failed to read request: {}", e))
+        })?;
+
         if n == 0 {
             if total_read == 0 {
                 // Client closed connection before sending anything
-                return Ok(None);
+                return Ok(ReadResult::Closed);
             }
-            bail!("Connection closed before complete request");
+            return Err(ProxyError::BadRequest(
+                "connection closed before complete request".to_string(),
+            ));
         }
         total_read += n;
 
@@ -272,14 +356,11 @@ async fn read_request(stream: &mut TcpStream) -> Result<Option<ParsedRequest>> {
         if total_read >= 4 {
             let data = &buf[..total_read];
             if data.windows(4).any(|w| w == b"\r\n\r\n") {
-                break;
+                buf.truncate(total_read);
+                return Ok(ReadResult::Data(buf));
             }
         }
     }
-
-    // Parse the request
-    let request = parse_request(&buf[..total_read])?;
-    Ok(Some(request))
 }
 
 /// Forward an HTTP request through a QUIC stream to the target node.
@@ -374,18 +455,27 @@ fn build_http_request(request: &ParsedRequest) -> String {
 }
 
 /// Parse an HTTP request from a buffer.
-fn parse_request(buf: &[u8]) -> Result<ParsedRequest> {
+fn parse_request(buf: &[u8]) -> Result<ParsedRequest, ProxyError> {
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
 
-    let status = req.parse(buf).context("failed to parse HTTP request")?;
+    let status = req.parse(buf).map_err(|e| {
+        ProxyError::BadRequest(format!("failed to parse HTTP request: {}", e))
+    })?;
     if status.is_partial() {
-        bail!("incomplete HTTP request");
+        return Err(ProxyError::BadRequest("incomplete HTTP request".to_string()));
     }
 
-    let method = req.method.context("missing method")?.to_string();
-    let path = req.path.context("missing path")?;
-    let version = req.version.context("missing version")?;
+    let method = req
+        .method
+        .ok_or_else(|| ProxyError::BadRequest("missing method".to_string()))?
+        .to_string();
+    let path = req
+        .path
+        .ok_or_else(|| ProxyError::BadRequest("missing path".to_string()))?;
+    let version = req
+        .version
+        .ok_or_else(|| ProxyError::BadRequest("missing version".to_string()))?;
 
     // Parse the target from the absolute URL
     let target = parse_proxy_target(path)?;
@@ -440,11 +530,16 @@ fn parse_request(buf: &[u8]) -> Result<ParsedRequest> {
 /// Parse the proxy target from an absolute URL.
 ///
 /// Expected format: `http://<node_number>.wispers.link[:port]/path`
-fn parse_proxy_target(url: &str) -> Result<ProxyTarget> {
+fn parse_proxy_target(url: &str) -> Result<ProxyTarget, ProxyError> {
     // Must start with http://
-    let rest = url
-        .strip_prefix("http://")
-        .context("proxy requests must use absolute URLs (http://...)")?;
+    let rest = match url.strip_prefix("http://") {
+        Some(r) => r,
+        None => {
+            return Err(ProxyError::BadRequest(
+                "proxy requests must use absolute URLs (http://...)".to_string(),
+            ));
+        }
+    };
 
     // Split host and path
     let (host_port, path) = match rest.find('/') {
@@ -456,25 +551,38 @@ fn parse_proxy_target(url: &str) -> Result<ProxyTarget> {
     let (host, port) = match host_port.rfind(':') {
         Some(pos) => {
             let port_str = &host_port[pos + 1..];
-            let port: u16 = port_str
-                .parse()
-                .with_context(|| format!("invalid port: {}", port_str))?;
+            let port: u16 = port_str.parse().map_err(|_| {
+                ProxyError::BadRequest(format!("invalid port: {}", port_str))
+            })?;
             (&host_port[..pos], port)
         }
         None => (host_port, 80),
     };
 
-    // Validate hostname matches <node_number>.wispers.link
-    let node_str = host
-        .strip_suffix(".wispers.link")
-        .with_context(|| format!("hostname must end with .wispers.link, got: {}", host))?;
+    // Validate hostname ends with .wispers.link
+    let node_str = match host.strip_suffix(".wispers.link") {
+        Some(s) => s,
+        None => {
+            return Err(ProxyError::Forbidden(format!(
+                "only *.wispers.link hosts are allowed, got: {}",
+                host
+            )));
+        }
+    };
 
-    let node_number: i32 = node_str
-        .parse()
-        .with_context(|| format!("invalid node number: {}", node_str))?;
+    // Parse node number
+    let node_number: i32 = node_str.parse().map_err(|_| {
+        ProxyError::BadRequest(format!(
+            "invalid node number in hostname: {}",
+            node_str
+        ))
+    })?;
 
     if node_number <= 0 {
-        bail!("node number must be positive, got: {}", node_number);
+        return Err(ProxyError::BadRequest(format!(
+            "node number must be positive, got: {}",
+            node_number
+        )));
     }
 
     Ok(ProxyTarget {
@@ -497,6 +605,12 @@ fn is_hop_by_hop_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+/// Send an HTTP error response.
+/// Send an HTTP error response for a ProxyError.
+async fn send_proxy_error(stream: &mut TcpStream, error: &ProxyError) -> Result<()> {
+    send_error(stream, error.status_code(), &error.to_string()).await
 }
 
 /// Send an HTTP error response.
@@ -563,21 +677,35 @@ mod tests {
 
     #[test]
     fn test_parse_proxy_target_invalid_no_http() {
-        assert!(parse_proxy_target("https://3.wispers.link/").is_err());
-        assert!(parse_proxy_target("/path").is_err());
+        // HTTPS and relative paths should return 400 Bad Request
+        let err = parse_proxy_target("https://3.wispers.link/").unwrap_err();
+        assert_eq!(err.status_code(), 400);
+
+        let err = parse_proxy_target("/path").unwrap_err();
+        assert_eq!(err.status_code(), 400);
     }
 
     #[test]
-    fn test_parse_proxy_target_invalid_hostname() {
-        assert!(parse_proxy_target("http://example.com/").is_err());
-        assert!(parse_proxy_target("http://wispers.link/").is_err());
-        assert!(parse_proxy_target("http://abc.wispers.link/").is_err());
+    fn test_parse_proxy_target_forbidden_hostname() {
+        // Non-wispers.link hosts should return 403 Forbidden
+        let err = parse_proxy_target("http://example.com/").unwrap_err();
+        assert_eq!(err.status_code(), 403);
+
+        let err = parse_proxy_target("http://google.com/").unwrap_err();
+        assert_eq!(err.status_code(), 403);
     }
 
     #[test]
     fn test_parse_proxy_target_invalid_node_number() {
-        assert!(parse_proxy_target("http://0.wispers.link/").is_err());
-        assert!(parse_proxy_target("http://-1.wispers.link/").is_err());
+        // Invalid node numbers in wispers.link should return 400
+        let err = parse_proxy_target("http://abc.wispers.link/").unwrap_err();
+        assert_eq!(err.status_code(), 400);
+
+        let err = parse_proxy_target("http://0.wispers.link/").unwrap_err();
+        assert_eq!(err.status_code(), 400);
+
+        let err = parse_proxy_target("http://-1.wispers.link/").unwrap_err();
+        assert_eq!(err.status_code(), 400);
     }
 
     #[test]
