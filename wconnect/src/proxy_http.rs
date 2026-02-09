@@ -178,15 +178,78 @@ struct ParsedRequest {
     keep_alive: bool,
 }
 
-/// Handle a single client connection.
+/// Handle a single client connection (may process multiple requests via keep-alive).
 async fn handle_connection(
     mut stream: TcpStream,
     node: Arc<Node>,
     pool: ConnectionPool,
 ) -> Result<()> {
     let peer = stream.peer_addr()?;
+    let mut request_count = 0;
 
-    // Read the HTTP request
+    loop {
+        // Read the HTTP request
+        let request = match read_request(&mut stream).await {
+            Ok(Some(req)) => req,
+            Ok(None) => {
+                // Client closed connection gracefully
+                break;
+            }
+            Err(e) => {
+                if request_count == 0 {
+                    // First request failed - report error
+                    eprintln!("  Request read error: {}", e);
+                }
+                // Otherwise client just closed after previous request
+                break;
+            }
+        };
+
+        request_count += 1;
+        let keep_alive = request.keep_alive;
+
+        println!(
+            "  {} -> node {}:{}{} (keep-alive: {})",
+            request.method, request.target.node_number, request.target.port,
+            request.target.path, keep_alive
+        );
+
+        // Get or create QUIC connection to target node
+        let quic_conn = match pool.get_or_connect(&node, request.target.node_number).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                send_error(&mut stream, 502, &format!("Failed to connect to node: {}", e)).await?;
+                break;
+            }
+        };
+
+        // Forward the request
+        if let Err(e) = forward_request(&mut stream, &quic_conn, &request).await {
+            eprintln!("  Forward error: {}", e);
+            // Don't send error response here - we may have already started sending the response
+            break;
+        }
+
+        // If not keep-alive, close the connection
+        if !keep_alive {
+            break;
+        }
+
+        // Otherwise, loop back to handle the next request
+    }
+
+    println!(
+        "Connection from {} closed ({} request{})",
+        peer,
+        request_count,
+        if request_count == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+/// Read and parse an HTTP request from the stream.
+/// Returns Ok(None) if the client closed the connection gracefully.
+async fn read_request(stream: &mut TcpStream) -> Result<Option<ParsedRequest>> {
     let mut buf = vec![0u8; 8192];
     let mut total_read = 0;
 
@@ -197,6 +260,10 @@ async fn handle_connection(
 
         let n = stream.read(&mut buf[total_read..]).await?;
         if n == 0 {
+            if total_read == 0 {
+                // Client closed connection before sending anything
+                return Ok(None);
+            }
             bail!("Connection closed before complete request");
         }
         total_read += n;
@@ -211,39 +278,8 @@ async fn handle_connection(
     }
 
     // Parse the request
-    let request = match parse_request(&buf[..total_read]) {
-        Ok(req) => req,
-        Err(e) => {
-            send_error(&mut stream, 400, &format!("Bad Request: {}", e)).await?;
-            return Ok(());
-        }
-    };
-
-    println!(
-        "  {} -> node {}:{}{} (keep-alive: {})",
-        request.method, request.target.node_number, request.target.port,
-        request.target.path, request.keep_alive
-    );
-
-    // Get or create QUIC connection to target node
-    let quic_conn = match pool.get_or_connect(&node, request.target.node_number).await {
-        Ok(conn) => conn,
-        Err(e) => {
-            send_error(&mut stream, 502, &format!("Failed to connect to node: {}", e)).await?;
-            return Ok(());
-        }
-    };
-
-    // Forward the request
-    if let Err(e) = forward_request(&mut stream, &quic_conn, &request).await {
-        eprintln!("  Forward error: {}", e);
-        // Don't send error response here - we may have already started sending the response
-    }
-
-    // TODO: Phase 5 - Handle keep-alive (loop back to read next request)
-
-    println!("Connection from {} closed", peer);
-    Ok(())
+    let request = parse_request(&buf[..total_read])?;
+    Ok(Some(request))
 }
 
 /// Forward an HTTP request through a QUIC stream to the target node.
