@@ -5,58 +5,14 @@
 //! hostnames like `http://3.wispers.link/`.
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
 use wispers_connect::{Node, NodeState, QuicConnection};
 
-/// Default idle timeout for pooled connections (60 seconds).
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Interval for checking and cleaning up idle connections.
-const CLEANUP_INTERVAL: Duration = Duration::from_secs(15);
-
-/// Timeout for QUIC operations (connecting, forwarding).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Proxy-specific errors that map to HTTP status codes.
-#[derive(Debug)]
-enum ProxyError {
-    /// 400 Bad Request - malformed request
-    BadRequest(String),
-    /// 403 Forbidden - non-wispers.link host
-    Forbidden(String),
-    /// 502 Bad Gateway - upstream error
-    BadGateway(String),
-    /// 504 Gateway Timeout - upstream timeout
-    GatewayTimeout(String),
-}
-
-impl fmt::Display for ProxyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProxyError::BadRequest(msg) => write!(f, "{}", msg),
-            ProxyError::Forbidden(msg) => write!(f, "{}", msg),
-            ProxyError::BadGateway(msg) => write!(f, "{}", msg),
-            ProxyError::GatewayTimeout(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-impl ProxyError {
-    fn status_code(&self) -> u16 {
-        match self {
-            ProxyError::BadRequest(_) => 400,
-            ProxyError::Forbidden(_) => 403,
-            ProxyError::BadGateway(_) => 502,
-            ProxyError::GatewayTimeout(_) => 504,
-        }
-    }
-}
+use crate::proxy_common::{
+    parse_wispers_host, ConnectionPool, ProxyError, CLEANUP_INTERVAL, REQUEST_TIMEOUT,
+};
 
 /// Run the HTTP proxy server.
 pub async fn run(hub_override: Option<&str>, profile: &str, bind_addr: &str) -> Result<()> {
@@ -108,85 +64,6 @@ pub async fn run(hub_override: Option<&str>, profile: &str, bind_addr: &str) -> 
             Err(e) => {
                 eprintln!("Accept error: {}", e);
             }
-        }
-    }
-}
-
-/// A pooled QUIC connection with last-used timestamp.
-struct PooledConnection {
-    conn: Arc<QuicConnection>,
-    last_used: Instant,
-}
-
-/// Pool of QUIC connections to remote nodes.
-#[derive(Clone)]
-struct ConnectionPool {
-    /// Connections keyed by node number.
-    connections: Arc<Mutex<HashMap<i32, PooledConnection>>>,
-}
-
-impl ConnectionPool {
-    fn new() -> Self {
-        Self {
-            connections: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    /// Get an existing connection or create a new one.
-    ///
-    /// Returns an Arc to the connection so multiple requests can share it.
-    async fn get_or_connect(
-        &self,
-        node: &Node,
-        target_node: i32,
-    ) -> Result<Arc<QuicConnection>, wispers_connect::p2p::P2pError> {
-        // Check if we have an existing connection
-        {
-            let mut pool = self.connections.lock().await;
-            if let Some(pooled) = pool.get_mut(&target_node) {
-                pooled.last_used = Instant::now();
-                println!("  Reusing existing QUIC connection to node {}", target_node);
-                return Ok(Arc::clone(&pooled.conn));
-            }
-        }
-
-        // Create a new connection
-        println!("  Creating new QUIC connection to node {}", target_node);
-        let conn = node.connect_quic(target_node).await?;
-        let conn = Arc::new(conn);
-
-        // Store in pool
-        {
-            let mut pool = self.connections.lock().await;
-            pool.insert(
-                target_node,
-                PooledConnection {
-                    conn: Arc::clone(&conn),
-                    last_used: Instant::now(),
-                },
-            );
-        }
-
-        Ok(conn)
-    }
-
-    /// Clean up idle connections.
-    async fn cleanup_idle(&self) {
-        let mut pool = self.connections.lock().await;
-        let now = Instant::now();
-        let before = pool.len();
-
-        pool.retain(|node, pooled| {
-            let keep = now.duration_since(pooled.last_used) < IDLE_TIMEOUT;
-            if !keep {
-                println!("  Closing idle connection to node {}", node);
-            }
-            keep
-        });
-
-        let removed = before - pool.len();
-        if removed > 0 {
-            println!("  Cleaned up {} idle connection(s)", removed);
         }
     }
 }
@@ -559,31 +436,18 @@ fn parse_proxy_target(url: &str) -> Result<ProxyTarget, ProxyError> {
         None => (host_port, 80),
     };
 
-    // Validate hostname ends with .wispers.link
-    let node_str = match host.strip_suffix(".wispers.link") {
-        Some(s) => s,
-        None => {
+    // Validate hostname is wispers.link and parse node number
+    let node_number = match parse_wispers_host(host) {
+        Ok(wispers_host) => wispers_host.node_number,
+        Err(None) => {
+            // Not a wispers.link hostname - forbidden (no egress support yet)
             return Err(ProxyError::Forbidden(format!(
                 "only *.wispers.link hosts are allowed, got: {}",
                 host
             )));
         }
+        Err(Some(e)) => return Err(e),
     };
-
-    // Parse node number
-    let node_number: i32 = node_str.parse().map_err(|_| {
-        ProxyError::BadRequest(format!(
-            "invalid node number in hostname: {}",
-            node_str
-        ))
-    })?;
-
-    if node_number <= 0 {
-        return Err(ProxyError::BadRequest(format!(
-            "node number must be positive, got: {}",
-            node_number
-        )));
-    }
 
     Ok(ProxyTarget {
         node_number,

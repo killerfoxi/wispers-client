@@ -1,5 +1,6 @@
 mod daemon;
 mod p2p;
+mod proxy_common;
 mod proxy_http;
 mod serving;
 
