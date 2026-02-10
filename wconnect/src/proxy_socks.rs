@@ -85,7 +85,7 @@ pub async fn run(
                 let node = Arc::clone(&node);
                 let pool = pool.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, node, pool, egress_node).await {
+                    if let Err(e) = handle_client_connection(stream, node, pool, egress_node).await {
                         eprintln!("Connection error: {}", e);
                     }
                 });
@@ -107,7 +107,7 @@ struct ConnectRequest {
 }
 
 /// Handle a single SOCKS5 client connection.
-async fn handle_connection(
+async fn handle_client_connection(
     mut stream: TcpStream,
     node: Arc<Node>,
     pool: ConnectionPool,
