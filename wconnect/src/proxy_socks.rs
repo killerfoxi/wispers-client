@@ -8,10 +8,11 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use wispers_connect::{Node, NodeState, QuicConnection};
+use wispers_connect::{Node, NodeState};
 
 use crate::proxy_common::{
-    parse_wispers_host, ConnectionPool, ProxyError, CLEANUP_INTERVAL, REQUEST_TIMEOUT,
+    open_stream_with_command, parse_wispers_host, ConnectionPool, ProxyError, CLEANUP_INTERVAL,
+    REQUEST_TIMEOUT,
 };
 
 // SOCKS5 constants
@@ -332,12 +333,13 @@ async fn forward_to_node(
     };
 
     // Open stream and send FORWARD command
-    let quic_stream = match open_forward_stream(&quic_conn, port).await {
+    let command = format!("FORWARD {}\n", port);
+    let quic_stream = match open_stream_with_command(&quic_conn, &command).await {
         Ok(s) => s,
         Err(e) => {
             println!("  FORWARD failed: {}", e);
             send_reply(stream, REP_CONNECTION_REFUSED).await;
-            return Err(e);
+            return Err(anyhow::anyhow!("{}", e));
         }
     };
 
@@ -380,12 +382,13 @@ async fn egress_to_node(
     };
 
     // Open stream and send CONNECT command
-    let quic_stream = match open_connect_stream(&quic_conn, host, port).await {
+    let command = format!("CONNECT {}:{}\n", host, port);
+    let quic_stream = match open_stream_with_command(&quic_conn, &command).await {
         Ok(s) => s,
         Err(e) => {
             println!("  CONNECT failed: {}", e);
             send_reply(stream, REP_CONNECTION_REFUSED).await;
-            return Err(e);
+            return Err(anyhow::anyhow!("{}", e));
         }
     };
 
@@ -396,83 +399,6 @@ async fn egress_to_node(
     relay(stream, quic_stream).await;
 
     Ok(())
-}
-
-/// Open a QUIC stream and send FORWARD command.
-async fn open_forward_stream(
-    quic_conn: &QuicConnection,
-    port: u16,
-) -> Result<wispers_connect::QuicStream> {
-    let quic_stream = quic_conn
-        .open_stream()
-        .await
-        .context("failed to open QUIC stream")?;
-
-    // Send FORWARD command
-    let forward_cmd = format!("FORWARD {}\n", port);
-    quic_stream
-        .write_all(forward_cmd.as_bytes())
-        .await
-        .context("failed to send FORWARD command")?;
-
-    // Read response
-    let mut response_buf = [0u8; 256];
-    let n = quic_stream
-        .read(&mut response_buf)
-        .await
-        .context("failed to read FORWARD response")?;
-
-    let response = String::from_utf8_lossy(&response_buf[..n]);
-    let response = response.trim();
-
-    if response.starts_with("ERROR ") {
-        anyhow::bail!("remote error: {}", &response[6..]);
-    }
-
-    if response != "OK" {
-        anyhow::bail!("unexpected response: {}", response);
-    }
-
-    Ok(quic_stream)
-}
-
-/// Open a QUIC stream and send CONNECT command for egress.
-async fn open_connect_stream(
-    quic_conn: &QuicConnection,
-    host: &str,
-    port: u16,
-) -> Result<wispers_connect::QuicStream> {
-    let quic_stream = quic_conn
-        .open_stream()
-        .await
-        .context("failed to open QUIC stream")?;
-
-    // Send CONNECT command
-    let connect_cmd = format!("CONNECT {}:{}\n", host, port);
-    quic_stream
-        .write_all(connect_cmd.as_bytes())
-        .await
-        .context("failed to send CONNECT command")?;
-
-    // Read response
-    let mut response_buf = [0u8; 256];
-    let n = quic_stream
-        .read(&mut response_buf)
-        .await
-        .context("failed to read CONNECT response")?;
-
-    let response = String::from_utf8_lossy(&response_buf[..n]);
-    let response = response.trim();
-
-    if response.starts_with("ERROR ") {
-        anyhow::bail!("remote error: {}", &response[6..]);
-    }
-
-    if response != "OK" {
-        anyhow::bail!("unexpected response: {}", response);
-    }
-
-    Ok(quic_stream)
 }
 
 /// Bidirectional relay between TCP stream and QUIC stream.

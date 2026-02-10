@@ -11,7 +11,8 @@ use tokio::net::{TcpListener, TcpStream};
 use wispers_connect::{Node, NodeState, QuicConnection};
 
 use crate::proxy_common::{
-    parse_wispers_host, ConnectionPool, ProxyError, CLEANUP_INTERVAL, REQUEST_TIMEOUT,
+    open_stream_with_command, parse_wispers_host, ConnectionPool, ProxyError, CLEANUP_INTERVAL,
+    REQUEST_TIMEOUT,
 };
 
 /// Run the HTTP proxy server.
@@ -346,7 +347,7 @@ async fn read_request_bytes(stream: &mut TcpStream) -> Result<ReadResult, ProxyE
     }
 }
 
-/// Forward an HTTP request through a QUIC stream to the target node using FORWARD command.
+/// Forward an HTTP request to a wispers node using FORWARD command.
 async fn handle_wispers_request(
     client_stream: &mut TcpStream,
     quic_conn: &QuicConnection,
@@ -354,39 +355,14 @@ async fn handle_wispers_request(
     port: u16,
     path: &str,
 ) -> Result<()> {
-    // Open a new stream for this request
-    let quic_stream = quic_conn
-        .open_stream()
-        .await
-        .context("failed to open QUIC stream")?;
-
-    // Send FORWARD command
-    let forward_cmd = format!("FORWARD {}\n", port);
-    quic_stream
-        .write_all(forward_cmd.as_bytes())
-        .await
-        .context("failed to send FORWARD command")?;
-
-    // Read response (OK or ERROR)
-    let mut response_buf = [0u8; 256];
-    let n = quic_stream
-        .read(&mut response_buf)
-        .await
-        .context("failed to read FORWARD response")?;
-
-    let response = String::from_utf8_lossy(&response_buf[..n]);
-    let response = response.trim();
-
-    if response.starts_with("ERROR ") {
-        let error_msg = &response[6..];
-        send_error(client_stream, 502, &format!("Remote error: {}", error_msg)).await?;
-        return Ok(());
-    }
-
-    if response != "OK" {
-        send_error(client_stream, 502, &format!("Unexpected response: {}", response)).await?;
-        return Ok(());
-    }
+    let command = format!("FORWARD {}\n", port);
+    let quic_stream = match open_stream_with_command(quic_conn, &command).await {
+        Ok(s) => s,
+        Err(msg) => {
+            send_error(client_stream, 502, &msg).await?;
+            return Ok(());
+        }
+    };
 
     // Build and send the HTTP request to the remote server
     let http_request = build_http_request(request, path);
@@ -416,7 +392,7 @@ async fn handle_wispers_request(
     Ok(())
 }
 
-/// Forward an HTTP request through a QUIC stream via egress using CONNECT command.
+/// Forward an HTTP request via egress using CONNECT command.
 async fn handle_egress_request(
     client_stream: &mut TcpStream,
     quic_conn: &QuicConnection,
@@ -425,39 +401,14 @@ async fn handle_egress_request(
     port: u16,
     path: &str,
 ) -> Result<()> {
-    // Open a new stream for this request
-    let quic_stream = quic_conn
-        .open_stream()
-        .await
-        .context("failed to open QUIC stream")?;
-
-    // Send CONNECT command to establish tunnel to target
-    let connect_cmd = format!("CONNECT {}:{}\n", host, port);
-    quic_stream
-        .write_all(connect_cmd.as_bytes())
-        .await
-        .context("failed to send CONNECT command")?;
-
-    // Read response (OK or ERROR)
-    let mut response_buf = [0u8; 256];
-    let n = quic_stream
-        .read(&mut response_buf)
-        .await
-        .context("failed to read CONNECT response")?;
-
-    let response = String::from_utf8_lossy(&response_buf[..n]);
-    let response = response.trim();
-
-    if response.starts_with("ERROR ") {
-        let error_msg = &response[6..];
-        send_error(client_stream, 502, &format!("Remote error: {}", error_msg)).await?;
-        return Ok(());
-    }
-
-    if response != "OK" {
-        send_error(client_stream, 502, &format!("Unexpected response: {}", response)).await?;
-        return Ok(());
-    }
+    let command = format!("CONNECT {}:{}\n", host, port);
+    let quic_stream = match open_stream_with_command(quic_conn, &command).await {
+        Ok(s) => s,
+        Err(msg) => {
+            send_error(client_stream, 502, &msg).await?;
+            return Ok(());
+        }
+    };
 
     // Build and send the HTTP request to the remote server
     let http_request = build_http_request(request, path);
@@ -493,39 +444,14 @@ async fn handle_wispers_tunnel(
     quic_conn: &QuicConnection,
     port: u16,
 ) -> Result<()> {
-    // Open a new stream for this tunnel
-    let quic_stream = quic_conn
-        .open_stream()
-        .await
-        .context("failed to open QUIC stream")?;
-
-    // Send FORWARD command to establish tunnel to target port
-    let forward_cmd = format!("FORWARD {}\n", port);
-    quic_stream
-        .write_all(forward_cmd.as_bytes())
-        .await
-        .context("failed to send FORWARD command")?;
-
-    // Read response (OK or ERROR)
-    let mut response_buf = [0u8; 256];
-    let n = quic_stream
-        .read(&mut response_buf)
-        .await
-        .context("failed to read FORWARD response")?;
-
-    let response = String::from_utf8_lossy(&response_buf[..n]);
-    let response = response.trim();
-
-    if response.starts_with("ERROR ") {
-        let error_msg = &response[6..];
-        send_error(client_stream, 502, &format!("Remote error: {}", error_msg)).await?;
-        return Ok(());
-    }
-
-    if response != "OK" {
-        send_error(client_stream, 502, &format!("Unexpected response: {}", response)).await?;
-        return Ok(());
-    }
+    let command = format!("FORWARD {}\n", port);
+    let quic_stream = match open_stream_with_command(quic_conn, &command).await {
+        Ok(s) => s,
+        Err(msg) => {
+            send_error(client_stream, 502, &msg).await?;
+            return Ok(());
+        }
+    };
 
     // Send 200 Connection Established to client
     client_stream
@@ -586,39 +512,14 @@ async fn handle_egress_tunnel(
     host: &str,
     port: u16,
 ) -> Result<()> {
-    // Open a new stream for this tunnel
-    let quic_stream = quic_conn
-        .open_stream()
-        .await
-        .context("failed to open QUIC stream")?;
-
-    // Send CONNECT command to establish tunnel to target
-    let connect_cmd = format!("CONNECT {}:{}\n", host, port);
-    quic_stream
-        .write_all(connect_cmd.as_bytes())
-        .await
-        .context("failed to send CONNECT command")?;
-
-    // Read response (OK or ERROR)
-    let mut response_buf = [0u8; 256];
-    let n = quic_stream
-        .read(&mut response_buf)
-        .await
-        .context("failed to read CONNECT response")?;
-
-    let response = String::from_utf8_lossy(&response_buf[..n]);
-    let response = response.trim();
-
-    if response.starts_with("ERROR ") {
-        let error_msg = &response[6..];
-        send_error(client_stream, 502, &format!("Remote error: {}", error_msg)).await?;
-        return Ok(());
-    }
-
-    if response != "OK" {
-        send_error(client_stream, 502, &format!("Unexpected response: {}", response)).await?;
-        return Ok(());
-    }
+    let command = format!("CONNECT {}:{}\n", host, port);
+    let quic_stream = match open_stream_with_command(quic_conn, &command).await {
+        Ok(s) => s,
+        Err(msg) => {
+            send_error(client_stream, 502, &msg).await?;
+            return Ok(());
+        }
+    };
 
     // Send 200 Connection Established to client
     client_stream

@@ -11,7 +11,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use wispers_connect::{Node, QuicConnection};
+use wispers_connect::{Node, QuicConnection, QuicStream};
 
 /// Default idle timeout for pooled connections (60 seconds).
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -187,6 +187,42 @@ pub fn parse_wispers_host(host: &str) -> Result<WispersHost, Option<ProxyError>>
     }
 
     Ok(WispersHost { node_number })
+}
+
+/// Open a QUIC stream and send a wire protocol command.
+/// Returns the stream ready for use if the command succeeds, or an error message.
+pub async fn open_stream_with_command(
+    quic_conn: &QuicConnection,
+    command: &str,
+) -> Result<QuicStream, String> {
+    let quic_stream = quic_conn
+        .open_stream()
+        .await
+        .map_err(|e| format!("failed to open stream: {}", e))?;
+
+    quic_stream
+        .write_all(command.as_bytes())
+        .await
+        .map_err(|e| format!("failed to send command: {}", e))?;
+
+    let mut response_buf = [0u8; 256];
+    let n = quic_stream
+        .read(&mut response_buf)
+        .await
+        .map_err(|e| format!("failed to read response: {}", e))?;
+
+    let response = String::from_utf8_lossy(&response_buf[..n]);
+    let response = response.trim();
+
+    if response.starts_with("ERROR ") {
+        return Err(format!("remote error: {}", &response[6..]));
+    }
+
+    if response != "OK" {
+        return Err(format!("unexpected response: {}", response));
+    }
+
+    Ok(quic_stream)
 }
 
 #[cfg(test)]
