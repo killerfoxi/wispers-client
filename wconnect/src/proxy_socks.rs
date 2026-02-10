@@ -26,7 +26,6 @@ const ATYP_IPV6: u8 = 0x04;
 const REP_SUCCESS: u8 = 0x00;
 const REP_GENERAL_FAILURE: u8 = 0x01;
 const REP_NOT_ALLOWED: u8 = 0x02;
-const REP_NETWORK_UNREACHABLE: u8 = 0x03;
 const REP_HOST_UNREACHABLE: u8 = 0x04;
 const REP_CONNECTION_REFUSED: u8 = 0x05;
 const REP_TTL_EXPIRED: u8 = 0x06;
@@ -563,5 +562,220 @@ mod tests {
         assert_eq!(REP_TTL_EXPIRED, 0x06);
         assert_eq!(REP_COMMAND_NOT_SUPPORTED, 0x07);
         assert_eq!(REP_ADDRESS_TYPE_NOT_SUPPORTED, 0x08);
+    }
+
+    // Helper to build auth request
+    fn build_auth_request(methods: &[u8]) -> Vec<u8> {
+        let mut data = vec![SOCKS_VERSION, methods.len() as u8];
+        data.extend_from_slice(methods);
+        data
+    }
+
+    // Helper to build connect request with IPv4
+    fn build_connect_ipv4(ip: [u8; 4], port: u16) -> Vec<u8> {
+        let mut data = vec![SOCKS_VERSION, CMD_CONNECT, 0x00, ATYP_IPV4];
+        data.extend_from_slice(&ip);
+        data.extend_from_slice(&port.to_be_bytes());
+        data
+    }
+
+    // Helper to build connect request with domain
+    fn build_connect_domain(domain: &str, port: u16) -> Vec<u8> {
+        let mut data = vec![SOCKS_VERSION, CMD_CONNECT, 0x00, ATYP_DOMAIN];
+        data.push(domain.len() as u8);
+        data.extend_from_slice(domain.as_bytes());
+        data.extend_from_slice(&port.to_be_bytes());
+        data
+    }
+
+    // Helper to build connect request with IPv6
+    fn build_connect_ipv6(ip: [u8; 16], port: u16) -> Vec<u8> {
+        let mut data = vec![SOCKS_VERSION, CMD_CONNECT, 0x00, ATYP_IPV6];
+        data.extend_from_slice(&ip);
+        data.extend_from_slice(&port.to_be_bytes());
+        data
+    }
+
+    // ===== Auth parsing tests =====
+
+    #[test]
+    fn test_auth_response_noauth() {
+        // Expected response when NOAUTH is accepted
+        let expected_response = [SOCKS_VERSION, AUTH_NOAUTH];
+        assert_eq!(expected_response, [0x05, 0x00]);
+    }
+
+    #[test]
+    fn test_auth_request_multiple_methods() {
+        // Client offers multiple methods including NOAUTH
+        let data = build_auth_request(&[0x02, AUTH_NOAUTH, 0x01]); // GSSAPI, NOAUTH, USERNAME
+        assert_eq!(data, [0x05, 0x03, 0x02, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn test_auth_request_structure() {
+        // Verify auth request format: VER | NMETHODS | METHODS...
+        let req = build_auth_request(&[AUTH_NOAUTH]);
+        assert_eq!(req[0], SOCKS_VERSION);
+        assert_eq!(req[1], 1); // nmethods
+        assert_eq!(req[2], AUTH_NOAUTH);
+    }
+
+    // ===== Connect request parsing tests =====
+
+    #[test]
+    fn test_connect_request_ipv4_structure() {
+        let req = build_connect_ipv4([192, 168, 1, 1], 8080);
+        assert_eq!(req[0], SOCKS_VERSION);
+        assert_eq!(req[1], CMD_CONNECT);
+        assert_eq!(req[2], 0x00); // reserved
+        assert_eq!(req[3], ATYP_IPV4);
+        assert_eq!(&req[4..8], &[192, 168, 1, 1]);
+        assert_eq!(&req[8..10], &8080u16.to_be_bytes());
+    }
+
+    #[test]
+    fn test_connect_request_domain_structure() {
+        let req = build_connect_domain("example.com", 443);
+        assert_eq!(req[0], SOCKS_VERSION);
+        assert_eq!(req[1], CMD_CONNECT);
+        assert_eq!(req[2], 0x00); // reserved
+        assert_eq!(req[3], ATYP_DOMAIN);
+        assert_eq!(req[4], 11); // "example.com".len()
+        assert_eq!(&req[5..16], b"example.com");
+        assert_eq!(&req[16..18], &443u16.to_be_bytes());
+    }
+
+    #[test]
+    fn test_connect_request_wispers_domain() {
+        let req = build_connect_domain("3.wispers.link", 80);
+        assert_eq!(req[4], 14); // "3.wispers.link".len()
+        assert_eq!(&req[5..19], b"3.wispers.link");
+    }
+
+    #[test]
+    fn test_connect_request_ipv6_structure() {
+        // IPv6 ::1
+        let ip = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let req = build_connect_ipv6(ip, 8080);
+        assert_eq!(req[0], SOCKS_VERSION);
+        assert_eq!(req[1], CMD_CONNECT);
+        assert_eq!(req[2], 0x00); // reserved
+        assert_eq!(req[3], ATYP_IPV6);
+        assert_eq!(&req[4..20], &ip);
+        assert_eq!(&req[20..22], &8080u16.to_be_bytes());
+    }
+
+    // ===== Reply structure tests =====
+
+    #[test]
+    fn test_reply_structure() {
+        // Reply format: VER | REP | RSV | ATYP | BND.ADDR | BND.PORT
+        let expected_success = [
+            SOCKS_VERSION,  // VER
+            REP_SUCCESS,    // REP
+            0x00,           // RSV
+            ATYP_IPV4,      // ATYP
+            0, 0, 0, 0,     // BND.ADDR
+            0, 0,           // BND.PORT
+        ];
+        assert_eq!(expected_success.len(), 10);
+        assert_eq!(expected_success[0], 0x05);
+        assert_eq!(expected_success[1], 0x00);
+    }
+
+    #[test]
+    fn test_reply_error_codes() {
+        // Verify error reply has same structure
+        let error_reply = [
+            SOCKS_VERSION,
+            REP_CONNECTION_REFUSED,
+            0x00,
+            ATYP_IPV4,
+            0, 0, 0, 0,
+            0, 0,
+        ];
+        assert_eq!(error_reply[1], 0x05); // connection refused
+    }
+
+    // ===== Port encoding tests =====
+
+    #[test]
+    fn test_port_big_endian() {
+        // Port 8080 = 0x1F90
+        let port: u16 = 8080;
+        let bytes = port.to_be_bytes();
+        assert_eq!(bytes, [0x1F, 0x90]);
+
+        // Port 443 = 0x01BB
+        let port: u16 = 443;
+        let bytes = port.to_be_bytes();
+        assert_eq!(bytes, [0x01, 0xBB]);
+
+        // Port 80 = 0x0050
+        let port: u16 = 80;
+        let bytes = port.to_be_bytes();
+        assert_eq!(bytes, [0x00, 0x50]);
+    }
+
+    // ===== Command code tests =====
+
+    #[test]
+    fn test_unsupported_commands() {
+        // BIND command
+        const CMD_BIND: u8 = 0x02;
+        // UDP ASSOCIATE command
+        const CMD_UDP_ASSOCIATE: u8 = 0x03;
+
+        // These should not be confused with CONNECT
+        assert_ne!(CMD_BIND, CMD_CONNECT);
+        assert_ne!(CMD_UDP_ASSOCIATE, CMD_CONNECT);
+    }
+
+    // ===== IPv4 formatting tests =====
+
+    #[test]
+    fn test_ipv4_address_formatting() {
+        let addr = [192u8, 168, 1, 1];
+        let formatted = format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]);
+        assert_eq!(formatted, "192.168.1.1");
+
+        let addr = [127u8, 0, 0, 1];
+        let formatted = format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]);
+        assert_eq!(formatted, "127.0.0.1");
+    }
+
+    // ===== Domain validation tests =====
+
+    #[test]
+    fn test_wispers_domain_parsing() {
+        // These should be recognized as wispers domains
+        let result = parse_wispers_host("3.wispers.link");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().node_number, 3);
+
+        let result = parse_wispers_host("123.wispers.link");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().node_number, 123);
+    }
+
+    #[test]
+    fn test_non_wispers_domain() {
+        // These should NOT be recognized as wispers domains
+        let result = parse_wispers_host("example.com");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_none()); // None means not a wispers domain
+
+        let result = parse_wispers_host("google.com");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_none());
+    }
+
+    #[test]
+    fn test_invalid_wispers_domain() {
+        // Invalid node number
+        let result = parse_wispers_host("abc.wispers.link");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_some()); // Some error means malformed wispers domain
     }
 }

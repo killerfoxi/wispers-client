@@ -91,6 +91,11 @@ enum Command {
         /// Address to bind the proxy server (default: 127.0.0.111:8080)
         #[arg(long, default_value = "127.0.0.111:8080")]
         bind: String,
+
+        /// Node number to use as egress point for non-wispers.link traffic.
+        /// Without this, only *.wispers.link destinations are allowed.
+        #[arg(long)]
+        egress_node: Option<i32>,
     },
     /// Start SOCKS5 proxy for accessing services on remote nodes
     ProxySocks {
@@ -248,7 +253,9 @@ async fn async_main(
         Command::Forward { local_port, node, remote_port } => {
             p2p::forward(hub_override, profile, local_port, node, remote_port).await
         }
-        Command::ProxyHttp { bind } => proxy_http::run(hub_override, profile, &bind).await,
+        Command::ProxyHttp { bind, egress_node } => {
+            proxy_http::run(hub_override, profile, &bind, egress_node).await
+        }
         Command::ProxySocks { bind, egress_node } => {
             proxy_socks::run(hub_override, profile, &bind, egress_node).await
         }
