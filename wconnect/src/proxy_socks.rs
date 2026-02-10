@@ -240,8 +240,11 @@ async fn handle_connect_request(stream: &mut TcpStream) -> Result<ConnectRequest
             })?
         }
         ATYP_IPV6 => {
-            send_reply(stream, REP_ADDRESS_TYPE_NOT_SUPPORTED).await;
-            return Err(ProxyError::BadRequest("IPv6 not supported yet".to_string()));
+            let mut addr = [0u8; 16];
+            stream.read_exact(&mut addr).await.map_err(|e| {
+                ProxyError::BadRequest(format!("failed to read IPv6 address: {}", e))
+            })?;
+            std::net::Ipv6Addr::from(addr).to_string()
         }
         _ => {
             send_reply(stream, REP_ADDRESS_TYPE_NOT_SUPPORTED).await;
@@ -743,6 +746,34 @@ mod tests {
         let addr = [127u8, 0, 0, 1];
         let formatted = format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]);
         assert_eq!(formatted, "127.0.0.1");
+    }
+
+    // ===== IPv6 formatting tests =====
+
+    #[test]
+    fn test_ipv6_address_formatting() {
+        use std::net::Ipv6Addr;
+
+        // ::1 (loopback)
+        let addr = [0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let formatted = Ipv6Addr::from(addr).to_string();
+        assert_eq!(formatted, "::1");
+
+        // 2001:db8::1
+        let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let formatted = Ipv6Addr::from(addr).to_string();
+        assert_eq!(formatted, "2001:db8::1");
+
+        // fe80::1 (link-local)
+        let addr = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let formatted = Ipv6Addr::from(addr).to_string();
+        assert_eq!(formatted, "fe80::1");
+
+        // Full address: 2001:db8:85a3:0:0:8a2e:370:7334
+        let addr = [0x20, 0x01, 0x0d, 0xb8, 0x85, 0xa3, 0x00, 0x00,
+                    0x00, 0x00, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x34];
+        let formatted = Ipv6Addr::from(addr).to_string();
+        assert_eq!(formatted, "2001:db8:85a3::8a2e:370:7334");
     }
 
     // ===== Domain validation tests =====
