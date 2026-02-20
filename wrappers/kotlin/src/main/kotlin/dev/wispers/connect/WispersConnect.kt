@@ -64,7 +64,9 @@ object WispersConnect {
         val nativeCallbacks = callbacks.toNativeCallbacks()
         val ptr = lib.wispers_storage_new_with_callbacks(nativeCallbacks)
             ?: throw WispersException.NullPointer("Failed to create storage with callbacks")
-        return Storage(ptr, lib)
+        // Pass nativeCallbacks as callbackRef so Storage holds a strong reference,
+        // preventing GC from collecting the JNA callback structure.
+        return Storage(ptr, lib, callbackRef = nativeCallbacks)
     }
 
     /**

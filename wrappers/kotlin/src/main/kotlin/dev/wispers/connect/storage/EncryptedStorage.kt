@@ -3,6 +3,7 @@ package dev.wispers.connect.storage
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Base64
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -25,40 +26,49 @@ internal class EncryptedStorage private constructor(
 ) : NodeStorageCallbacks {
 
     override fun loadRootKey(): ByteArray? {
-        val encoded = prefs.getString(KEY_ROOT_KEY, null) ?: return null
-        return Base64.decode(encoded, Base64.NO_WRAP)
+        val encoded = prefs.getString(KEY_ROOT_KEY, null)
+        Log.d(TAG, "loadRootKey: ${if (encoded != null) "${encoded.length} chars" else "null"}")
+        return encoded?.let { Base64.decode(it, Base64.NO_WRAP) }
     }
 
     override fun saveRootKey(key: ByteArray) {
-        prefs.edit()
-            .putString(KEY_ROOT_KEY, Base64.encodeToString(key, Base64.NO_WRAP))
-            .apply()
+        val encoded = Base64.encodeToString(key, Base64.NO_WRAP)
+        val ok = prefs.edit()
+            .putString(KEY_ROOT_KEY, encoded)
+            .commit()
+        Log.d(TAG, "saveRootKey: ${key.size} bytes, commit=$ok")
     }
 
     override fun deleteRootKey() {
-        prefs.edit()
+        val ok = prefs.edit()
             .remove(KEY_ROOT_KEY)
-            .apply()
+            .commit()
+        Log.d(TAG, "deleteRootKey: commit=$ok")
     }
 
     override fun loadRegistration(): ByteArray? {
-        val encoded = prefs.getString(KEY_REGISTRATION, null) ?: return null
-        return Base64.decode(encoded, Base64.NO_WRAP)
+        val encoded = prefs.getString(KEY_REGISTRATION, null)
+        Log.d(TAG, "loadRegistration: ${if (encoded != null) "${encoded.length} chars" else "null"}")
+        return encoded?.let { Base64.decode(it, Base64.NO_WRAP) }
     }
 
     override fun saveRegistration(data: ByteArray) {
-        prefs.edit()
-            .putString(KEY_REGISTRATION, Base64.encodeToString(data, Base64.NO_WRAP))
-            .apply()
+        val encoded = Base64.encodeToString(data, Base64.NO_WRAP)
+        val ok = prefs.edit()
+            .putString(KEY_REGISTRATION, encoded)
+            .commit()
+        Log.d(TAG, "saveRegistration: ${data.size} bytes, commit=$ok")
     }
 
     override fun deleteRegistration() {
-        prefs.edit()
+        val ok = prefs.edit()
             .remove(KEY_REGISTRATION)
-            .apply()
+            .commit()
+        Log.d(TAG, "deleteRegistration: commit=$ok")
     }
 
     companion object {
+        private const val TAG = "WispersStorage"
         private const val PREFS_FILE_NAME = "wispers_connect_storage"
         private const val KEY_ROOT_KEY = "root_key"
         private const val KEY_REGISTRATION = "registration"

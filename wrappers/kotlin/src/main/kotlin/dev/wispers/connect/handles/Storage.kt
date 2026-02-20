@@ -22,7 +22,11 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  */
 class Storage internal constructor(
     pointer: Pointer,
-    private val lib: NativeLibrary = NativeLibrary.INSTANCE
+    private val lib: NativeLibrary = NativeLibrary.INSTANCE,
+    // Hold a strong reference to prevent GC from collecting the JNA callback
+    // structure while native code still holds pointers to the callbacks.
+    @Suppress("unused")
+    private val callbackRef: Any? = null
 ) : Handle(pointer) {
 
     /**
