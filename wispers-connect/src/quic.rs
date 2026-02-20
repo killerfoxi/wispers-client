@@ -576,6 +576,7 @@ impl<T: IceTransport + 'static> Connection<T> {
         Ok(Stream {
             inner: Arc::clone(&self.inner),
             stream_id,
+            recv_fin: AtomicBool::new(false),
         })
     }
 
@@ -597,6 +598,7 @@ impl<T: IceTransport + 'static> Connection<T> {
                         return Ok(Stream {
                             inner: Arc::clone(&self.inner),
                             stream_id,
+                            recv_fin: AtomicBool::new(false),
                         });
                     }
                 }
@@ -688,6 +690,9 @@ async fn driver_loop<T: IceTransport>(inner: Arc<ConnectionInner<T>>) {
 pub struct Stream<T: IceTransport + 'static> {
     inner: Arc<ConnectionInner<T>>,
     stream_id: u64,
+    /// Set to true once `stream_recv` returns fin, so subsequent reads
+    /// return 0 without touching quiche (the stream may already be collected).
+    recv_fin: AtomicBool,
 }
 
 impl<T: IceTransport + 'static> Stream<T> {
@@ -744,24 +749,47 @@ impl<T: IceTransport + 'static> Stream<T> {
 
     /// Read data from the stream.
     ///
-    /// Returns the number of bytes read. Returns 0 if the stream is finished.
+    /// Returns the number of bytes read. Returns 0 if the stream is finished
+    /// (peer sent FIN and all data has been delivered).
     pub async fn read(&self, buf: &mut [u8]) -> Result<usize, QuicError> {
+        // Fast path: we already saw FIN on a previous read.  quiche may have
+        // collected the stream so we must not call stream_recv again.
+        if self.recv_fin.load(Ordering::Acquire) {
+            return Ok(0);
+        }
+
         loop {
             // Try to read from the stream
             {
                 let mut conn = self.inner.conn.lock().await;
                 match conn.stream_recv(self.stream_id, buf) {
-                    Ok((len, _fin)) => return Ok(len),
+                    Ok((len, fin)) => {
+                        if fin {
+                            self.recv_fin.store(true, Ordering::Release);
+                        }
+                        return Ok(len);
+                    }
                     Err(quiche::Error::Done) => {
                         // No data available yet
                         if conn.stream_finished(self.stream_id) {
+                            self.recv_fin.store(true, Ordering::Release);
                             return Ok(0); // Stream finished
                         }
                     }
-                    Err(e) => return Err(QuicError::Quic(e)),
+                    Err(e) => {
+                        log::error!(
+                            "[wispers QUIC] stream {} recv error: {:?} (conn closed={}, draining={})",
+                            self.stream_id, e, conn.is_closed(), conn.is_draining()
+                        );
+                        return Err(QuicError::Quic(e));
+                    }
                 }
 
                 if conn.is_closed() {
+                    log::error!(
+                        "[wispers QUIC] stream {} read: connection closed",
+                        self.stream_id
+                    );
                     return Err(QuicError::ConnectionClosed);
                 }
             }
@@ -911,5 +939,218 @@ mod tests {
         let psk = derive_psk(&[42u8; 32]);
         let config = create_config(psk, QuicRole::Server);
         assert!(config.is_ok());
+    }
+
+    // --- Loopback QUIC transport for integration-style tests ---
+
+    /// Channel-based transport that shuttles packets between two QUIC endpoints
+    /// in the same process, replacing ICE/UDP entirely.
+    struct ChannelTransport {
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
+    }
+
+    impl IceTransport for ChannelTransport {
+        fn send(&self, data: &[u8]) -> Result<(), IceError> {
+            self.tx
+                .send(data.to_vec())
+                .map_err(|_| IceError::ChannelClosed)
+        }
+
+        fn recv(&self) -> impl std::future::Future<Output = Result<Vec<u8>, IceError>> + Send {
+            async {
+                self.rx
+                    .lock()
+                    .await
+                    .recv()
+                    .await
+                    .ok_or(IceError::ChannelClosed)
+            }
+        }
+    }
+
+    /// Create a connected (client, server) QUIC pair over in-memory channels.
+    async fn loopback_pair() -> (Connection<ChannelTransport>, Connection<ChannelTransport>) {
+        let (a_tx, a_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (b_tx, b_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let client_transport = ChannelTransport {
+            tx: a_tx,
+            rx: tokio::sync::Mutex::new(b_rx),
+        };
+        let server_transport = ChannelTransport {
+            tx: b_tx,
+            rx: tokio::sync::Mutex::new(a_rx),
+        };
+
+        let psk = derive_psk(&[99u8; 32]);
+        let client_scid = quiche::ConnectionId::from_vec(vec![1, 2, 3, 4]);
+        let server_scid = quiche::ConnectionId::from_vec(vec![5, 6, 7, 8]);
+
+        // Server must be spawned first (it blocks on the Initial packet).
+        let server_fut =
+            tokio::spawn(
+                async move { Connection::new_server(server_transport, psk, server_scid).await },
+            );
+
+        let client = Connection::new_client(client_transport, psk, client_scid)
+            .await
+            .expect("client created");
+
+        let server = server_fut.await.unwrap().expect("server created");
+
+        // Complete handshake on both sides.
+        let (c, s) = tokio::join!(client.handshake(), server.handshake());
+        c.expect("client handshake");
+        s.expect("server handshake");
+
+        (client, server)
+    }
+
+    /// Basic sanity: write → read on a single stream.
+    #[tokio::test]
+    async fn test_loopback_stream_basic() {
+        let (client, server) = loopback_pair().await;
+
+        let server_task = tokio::spawn(async move {
+            let stream = server.accept_stream().await.unwrap();
+            let mut buf = [0u8; 256];
+            let n = stream.read(&mut buf).await.unwrap();
+            stream.write_all(&buf[..n]).await.unwrap(); // echo
+            stream.finish().await.unwrap();
+        });
+
+        let stream = client.open_stream().await.unwrap();
+        stream.write_all(b"hello").await.unwrap();
+        stream.finish().await.unwrap();
+
+        let mut buf = [0u8; 256];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"hello");
+
+        // Should get EOF (server finished)
+        let n = stream.read(&mut buf).await.unwrap();
+        assert_eq!(n, 0);
+
+        server_task.await.unwrap();
+    }
+
+    /// The sequence under investigation:
+    ///   client: write → finish → read
+    ///
+    /// The client sends FIN *before* attempting to read the server's response.
+    /// If quiche garbage-collects the stream between finish() and read(), the
+    /// read will fail with InvalidStreamState.
+    #[tokio::test]
+    async fn test_finish_before_read() {
+        let (client, server) = loopback_pair().await;
+
+        // Server: accept stream, read request, send response, finish.
+        let server_task = tokio::spawn(async move {
+            let stream = server.accept_stream().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let mut total = Vec::new();
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total.extend_from_slice(&buf[..n]);
+            }
+            // Echo back a response
+            stream.write_all(&total).await.unwrap();
+            stream.finish().await.unwrap();
+        });
+
+        let stream = client.open_stream().await.unwrap();
+        stream.write_all(b"request payload").await.unwrap();
+
+        // Finish BEFORE reading — this is the sequence that fails via JNA.
+        stream.finish().await.unwrap();
+
+        // Now read the response.
+        let mut buf = [0u8; 4096];
+        let mut response = Vec::new();
+        loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            response.extend_from_slice(&buf[..n]);
+        }
+
+        assert_eq!(response, b"request payload");
+
+        server_task.await.unwrap();
+    }
+
+    /// Same as above but with multiple concurrent streams, which is closer
+    /// to the WebView scenario (4 parallel HTTP requests).
+    #[tokio::test]
+    async fn test_finish_before_read_concurrent() {
+        let (client, server) = loopback_pair().await;
+        let server = Arc::new(server);
+
+        // Server: accept streams in a loop and echo back.
+        let server_clone = Arc::clone(&server);
+        let server_task = tokio::spawn(async move {
+            let mut handles = Vec::new();
+            for _ in 0..4 {
+                let stream = server_clone.accept_stream().await.unwrap();
+                handles.push(tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let mut total = Vec::new();
+                    loop {
+                        let n = stream.read(&mut buf).await.unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        total.extend_from_slice(&buf[..n]);
+                    }
+                    stream.write_all(&total).await.unwrap();
+                    stream.finish().await.unwrap();
+                }));
+            }
+            for h in handles {
+                h.await.unwrap();
+            }
+        });
+
+        let client = Arc::new(client);
+
+        // Spawn 4 concurrent client streams, all doing finish-before-read.
+        let mut handles = Vec::new();
+        for i in 0u8..4 {
+            let client = Arc::clone(&client);
+            handles.push(tokio::spawn(async move {
+                let stream = client.open_stream().await.unwrap();
+                let payload = format!("request {}", i);
+                stream.write_all(payload.as_bytes()).await.unwrap();
+
+                // Finish BEFORE reading
+                stream.finish().await.unwrap();
+
+                let mut buf = [0u8; 4096];
+                let mut response = Vec::new();
+                loop {
+                    let n = stream
+                        .read(&mut buf)
+                        .await
+                        .expect(&format!("stream {} read failed", i));
+                    if n == 0 {
+                        break;
+                    }
+                    response.extend_from_slice(&buf[..n]);
+                }
+
+                assert_eq!(response, payload.as_bytes(), "stream {} mismatch", i);
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        server_task.await.unwrap();
     }
 }

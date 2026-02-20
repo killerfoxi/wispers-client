@@ -7,12 +7,28 @@ use tokio::runtime::Runtime;
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
+/// Initialize logging for the platform.
+///
+/// On Android, this routes `log` crate output to logcat.
+/// On other platforms, this is a no-op (use RUST_LOG env var with env_logger if needed).
+fn init_logging() {
+    #[cfg(target_os = "android")]
+    {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Debug)
+                .with_tag("WispersNative"),
+        );
+    }
+}
+
 /// Get or initialize the library's tokio runtime.
 ///
 /// The runtime is created lazily on first call and reused for all subsequent calls.
 /// Uses a multi-threaded runtime to handle concurrent async operations.
 pub(crate) fn get_runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
+        init_logging();
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("wispers-ffi")

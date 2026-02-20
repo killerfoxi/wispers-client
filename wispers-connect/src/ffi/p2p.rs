@@ -478,7 +478,8 @@ pub extern "C" fn wispers_quic_stream_write_async(
                     callback(ctx.ptr(), WispersStatus::Success);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                log::error!("[wispers FFI] quic_stream_write error: {:?}", e);
                 unsafe {
                     callback(ctx.ptr(), WispersStatus::ConnectionFailed);
                 }
@@ -525,7 +526,8 @@ pub extern "C" fn wispers_quic_stream_read_async(
                     callback(ctx.ptr(), WispersStatus::Success, buf.as_ptr(), n);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                log::error!("[wispers FFI] quic_stream_read error: {:?}", e);
                 unsafe {
                     callback(ctx.ptr(), WispersStatus::ConnectionFailed, std::ptr::null(), 0);
                 }
@@ -569,7 +571,8 @@ pub extern "C" fn wispers_quic_stream_finish_async(
                     callback(ctx.ptr(), WispersStatus::Success);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                log::error!("[wispers FFI] quic_stream_finish error: {:?}", e);
                 unsafe {
                     callback(ctx.ptr(), WispersStatus::ConnectionFailed);
                 }
