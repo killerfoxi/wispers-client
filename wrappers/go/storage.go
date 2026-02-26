@@ -22,24 +22,24 @@ type StorageCallbacks interface {
 	DeleteRegistration() error
 }
 
-// Storage wraps a WispersNodeStorageHandle.
-type Storage struct {
+// NodeStorage wraps a WispersNodeStorageHandle.
+type NodeStorage struct {
 	handle
 	cgoHandle *cgo.Handle // non-nil for callback-backed storage; prevents GC
 }
 
-// NewInMemoryStorage creates a storage backed by in-memory state (for testing).
-func NewInMemoryStorage() *Storage {
+// NewInMemoryNodeStorage creates a storage backed by in-memory state (for testing).
+func NewInMemoryNodeStorage() *NodeStorage {
 	ptr := C.wispers_storage_new_in_memory()
-	return &Storage{handle: handle{ptr: unsafe.Pointer(ptr)}}
+	return &NodeStorage{handle: handle{ptr: unsafe.Pointer(ptr)}}
 }
 
-// NewStorage creates a storage backed by host-provided callbacks.
-func NewStorage(cb StorageCallbacks) *Storage {
+// NewNodeStorage creates a storage backed by host-provided callbacks.
+func NewNodeStorage(cb StorageCallbacks) *NodeStorage {
 	h := cgo.NewHandle(cb)
 	cCallbacks := C.makeStorageCallbacks(unsafe.Pointer(uintptr(h)))
 	ptr := C.wispers_storage_new_with_callbacks(&cCallbacks)
-	return &Storage{
+	return &NodeStorage{
 		handle:    handle{ptr: unsafe.Pointer(ptr)},
 		cgoHandle: &h,
 	}
@@ -47,7 +47,7 @@ func NewStorage(cb StorageCallbacks) *Storage {
 
 // ReadRegistration reads the local registration data (sync, no hub contact).
 // Returns ErrNotFound if the node is not registered.
-func (s *Storage) ReadRegistration() (*RegistrationInfo, error) {
+func (s *NodeStorage) ReadRegistration() (*RegistrationInfo, error) {
 	ptr := s.requireOpen()
 	var cInfo C.WispersRegistrationInfo
 	status := C.wispers_storage_read_registration(
@@ -67,7 +67,7 @@ func (s *Storage) ReadRegistration() (*RegistrationInfo, error) {
 }
 
 // OverrideHubAddr overrides the hub address (for testing/staging).
-func (s *Storage) OverrideHubAddr(addr string) error {
+func (s *NodeStorage) OverrideHubAddr(addr string) error {
 	ptr := s.requireOpen()
 	cAddr := C.CString(addr)
 	defer C.free(unsafe.Pointer(cAddr))
@@ -79,8 +79,8 @@ func (s *Storage) OverrideHubAddr(addr string) error {
 }
 
 // RestoreOrInit restores or initializes the node state. Returns a Node and its
-// current state. The Storage remains valid after this call.
-func (s *Storage) RestoreOrInit() (*Node, NodeState, error) {
+// current state. The NodeStorage remains valid after this call.
+func (s *NodeStorage) RestoreOrInit() (*Node, NodeState, error) {
 	ptr := s.requireOpen()
 	call := newPendingCall()
 	defer call.cancel()
@@ -104,7 +104,7 @@ func (s *Storage) RestoreOrInit() (*Node, NodeState, error) {
 }
 
 // Close frees the storage handle.
-func (s *Storage) Close() {
+func (s *NodeStorage) Close() {
 	ptr := s.consume()
 	C.wispers_storage_free((*C.WispersNodeStorageHandle)(ptr))
 	if s.cgoHandle != nil {

@@ -5,7 +5,7 @@ import (
 )
 
 func TestInMemoryStorageRestoreOrInit(t *testing.T) {
-	storage := NewInMemoryStorage()
+	storage := NewInMemoryNodeStorage()
 	defer storage.Close()
 
 	node, state, err := storage.RestoreOrInit()
@@ -24,7 +24,7 @@ func TestInMemoryStorageRestoreOrInit(t *testing.T) {
 }
 
 func TestInMemoryStorageReadRegistrationNotFound(t *testing.T) {
-	storage := NewInMemoryStorage()
+	storage := NewInMemoryNodeStorage()
 	defer storage.Close()
 
 	_, err := storage.ReadRegistration()
