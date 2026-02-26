@@ -109,6 +109,7 @@ message Node {
   int32 node_number = 1;
   string name = 2;
   int64 last_seen_at_millis = 3;
+  string metadata = 4;
 }
 
 message RosterRequest {
