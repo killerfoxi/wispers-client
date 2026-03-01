@@ -1,6 +1,6 @@
 plugins {
-    id("com.android.library") version "8.2.0"
-    kotlin("android") version "1.9.21"
+    id("com.android.library")
+    kotlin("android")
 }
 
 android {
@@ -8,7 +8,7 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 23
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("proguard-rules.pro")
     }
