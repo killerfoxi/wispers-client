@@ -3,10 +3,12 @@ use crate::types::PersistedNodeState;
 use std::fmt;
 use std::sync::Arc;
 
+pub mod codec;
 pub mod file;
 pub mod foreign;
 pub mod in_memory;
 
+pub use codec::{deserialize_registration, serialize_registration};
 pub use file::FileNodeStateStore;
 pub use foreign::{ForeignNodeStateStore, WispersNodeStorageCallbacks};
 pub use in_memory::InMemoryNodeStateStore;
@@ -20,6 +22,8 @@ pub enum StorageError {
     Io(std::io::Error),
     /// Invalid root key format (wrong length)
     InvalidRootKey,
+    /// Registration protobuf encode/decode error
+    RegistrationCodec(String),
     /// FFI callback missing
     MissingCallback(&'static str),
     /// FFI callback returned error status
@@ -32,6 +36,7 @@ impl fmt::Display for StorageError {
             StorageError::Poisoned => write!(f, "in-memory state lock was poisoned"),
             StorageError::Io(e) => write!(f, "I/O error: {e}"),
             StorageError::InvalidRootKey => write!(f, "invalid root key length"),
+            StorageError::RegistrationCodec(msg) => write!(f, "registration codec error: {msg}"),
             StorageError::MissingCallback(name) => write!(f, "missing callback: {name}"),
             StorageError::ForeignStatus(status) => {
                 write!(f, "store callback returned {status:?}")

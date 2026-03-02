@@ -1,15 +1,10 @@
 //! File-based storage for node state.
 
+use crate::storage::codec::{deserialize_registration, serialize_registration};
 use crate::storage::{NodeStateStore, StorageError};
-use crate::types::{AuthToken, ConnectivityGroupId, NodeRegistration, PersistedNodeState, ROOT_KEY_LEN};
-use prost::Message;
+use crate::types::{PersistedNodeState, ROOT_KEY_LEN};
 use std::fs;
 use std::path::PathBuf;
-
-/// Proto-generated storage types.
-mod proto {
-    tonic::include_proto!("connect.storage");
-}
 
 /// File-based node state store.
 ///
@@ -69,13 +64,8 @@ impl NodeStateStore for FileNodeStateStore {
         let registration_path = self.registration_path();
         let registration = if registration_path.exists() {
             let bytes = fs::read(&registration_path)?;
-            match proto::NodeRegistration::decode(bytes.as_slice()) {
-                Ok(proto_reg) => Some(NodeRegistration::new(
-                    ConnectivityGroupId::new(proto_reg.connectivity_group_id),
-                    proto_reg.node_number,
-                    AuthToken::new(proto_reg.auth_token),
-                    proto_reg.attestation_jwt,
-                )),
+            match deserialize_registration(&bytes) {
+                Ok(reg) => Some(reg),
                 Err(_) => {
                     log::warn!("Registration decode failed, treating as empty");
                     None
@@ -103,13 +93,7 @@ impl NodeStateStore for FileNodeStateStore {
         // Save registration if present
         let registration_path = self.registration_path();
         if let Some(registration) = state.registration() {
-            let proto_reg = proto::NodeRegistration {
-                connectivity_group_id: registration.connectivity_group_id.to_string(),
-                node_number: registration.node_number,
-                auth_token: registration.auth_token().map(|t| t.as_str().to_string()).unwrap_or_default(),
-                attestation_jwt: registration.attestation_jwt.clone(),
-            };
-            fs::write(&registration_path, proto_reg.encode_to_vec())?;
+            fs::write(&registration_path, serialize_registration(registration))?;
         } else if registration_path.exists() {
             fs::remove_file(&registration_path)?;
         }

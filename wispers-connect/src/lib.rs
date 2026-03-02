@@ -24,5 +24,5 @@ pub use roster::{
 pub use ice::{IceAnswerer, IceCaller, IceError};
 pub use p2p::{ConnectionState, UdpConnection, P2pError, QuicConnection, QuicStream, StunTurnConfig};
 pub use serving::{EndorsingStatus, IncomingConnections, P2pConfig, ServingError, ServingHandle, ServingSession, StatusInfo};
-pub use storage::{FileNodeStateStore, InMemoryNodeStateStore, NodeStateStore, StorageError};
+pub use storage::{FileNodeStateStore, InMemoryNodeStateStore, NodeStateStore, StorageError, serialize_registration, deserialize_registration};
 pub use types::{AuthToken, ConnectivityGroupId, NodeInfo, NodeRegistration, PersistedNodeState, ROOT_KEY_LEN};
