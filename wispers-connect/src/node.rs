@@ -297,6 +297,14 @@ impl Node {
             .map(|r| &r.connectivity_group_id)
     }
 
+    /// Get the attestation JWT. Returns None if not registered or not available.
+    pub fn attestation_jwt(&self) -> Option<&str> {
+        self.persisted
+            .registration
+            .as_ref()
+            .and_then(|r| r.attestation_jwt.as_deref())
+    }
+
     /// Get the root key bytes (internal use only).
     #[cfg(test)]
     pub(crate) fn root_key_bytes(&self) -> &[u8; crate::types::ROOT_KEY_LEN] {
