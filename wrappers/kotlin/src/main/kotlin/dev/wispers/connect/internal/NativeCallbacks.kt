@@ -50,20 +50,20 @@ object NativeCallbacks {
     }
 
     /**
-     * Callback that receives a node list.
+     * Callback that receives a group status.
      *
      * C signature:
      * ```
-     * void (*WispersNodeListCallback)(
+     * void (*WispersGroupStatusCallback)(
      *     void *ctx,
      *     WispersStatus status,
      *     const char *error_detail,
-     *     WispersNodeList *list
+     *     WispersGroupStatus *group_status
      * );
      * ```
      */
-    fun interface WispersNodeListCallback : Callback {
-        fun invoke(ctx: Pointer?, status: Int, errorDetail: String?, list: Pointer?)
+    fun interface WispersGroupStatusCallback : Callback {
+        fun invoke(ctx: Pointer?, status: Int, errorDetail: String?, groupStatus: Pointer?)
     }
 
     /**

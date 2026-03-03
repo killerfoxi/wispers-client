@@ -5,9 +5,9 @@
 
 use super::runtime;
 use super::types::{
-    c_str_to_string, CallbackContext, WispersCallback, WispersInitCallback, WispersNodeHandle,
-    WispersNodeList, WispersNodeListCallback, WispersNodeState, WispersNodeStorageHandle,
-    WispersRegistrationInfo,
+    c_str_to_string, CallbackContext, WispersCallback, WispersGroupStatus,
+    WispersGroupStatusCallback, WispersInitCallback, WispersNodeHandle, WispersNodeState,
+    WispersNodeStorageHandle, WispersRegistrationInfo,
 };
 use crate::errors::WispersStatus;
 use crate::node::{NodeState, NodeStorage};
@@ -321,15 +321,17 @@ pub extern "C" fn wispers_node_logout_async(
     WispersStatus::Success
 }
 
-/// List all nodes in the connectivity group.
+/// Get the group's activation status and node list.
 ///
 /// Returns INVALID_STATE if the node is in Pending state.
 /// The node handle is NOT consumed.
+/// On success, callback receives a WispersGroupStatus that must be freed
+/// with wispers_group_status_free().
 #[unsafe(no_mangle)]
-pub extern "C" fn wispers_node_list_nodes_async(
+pub extern "C" fn wispers_node_group_status_async(
     handle: *mut WispersNodeHandle,
     ctx: *mut c_void,
-    callback: WispersNodeListCallback,
+    callback: WispersGroupStatusCallback,
 ) -> WispersStatus {
     if handle.is_null() {
         return WispersStatus::NullPointer;
@@ -346,8 +348,8 @@ pub extern "C" fn wispers_node_list_nodes_async(
     runtime::spawn(async move {
         // Safety: caller must ensure handle is valid and not used concurrently
         let wrapper = unsafe { handle_ptr.get() };
-        let result = wrapper.0.list_nodes().await;
-        handle_list_nodes_result(result, ctx, callback);
+        let result = wrapper.0.group_status().await;
+        handle_group_status_result(result, ctx, callback);
     });
 
     WispersStatus::Success
@@ -391,21 +393,26 @@ impl SendableNodePtr {
     }
 }
 
-fn handle_list_nodes_result(
-    result: Result<Vec<crate::types::NodeInfo>, crate::errors::NodeStateError>,
+fn handle_group_status_result(
+    result: Result<crate::types::GroupStatus, crate::errors::NodeStateError>,
     ctx: CallbackContext,
-    callback: unsafe extern "C" fn(*mut c_void, WispersStatus, *const c_char, *mut WispersNodeList),
+    callback: unsafe extern "C" fn(
+        *mut c_void,
+        WispersStatus,
+        *const c_char,
+        *mut WispersGroupStatus,
+    ),
 ) {
     match result {
-        Ok(nodes) => match WispersNodeList::from_node_infos(nodes) {
-            Ok(list) => {
-                let list_ptr = Box::into_raw(Box::new(list));
+        Ok(group_status) => match WispersGroupStatus::from_group_status(group_status) {
+            Ok(ffi_status) => {
+                let ptr = Box::into_raw(Box::new(ffi_status));
                 unsafe {
-                    callback(ctx.ptr(), WispersStatus::Success, std::ptr::null(), list_ptr);
+                    callback(ctx.ptr(), WispersStatus::Success, std::ptr::null(), ptr);
                 }
             }
             Err(status) => {
-                let detail = CString::new(format!("failed to build node list: {status:?}"))
+                let detail = CString::new(format!("failed to build group status: {status:?}"))
                     .unwrap_or_default();
                 unsafe {
                     callback(ctx.ptr(), status, detail.as_ptr(), std::ptr::null_mut());

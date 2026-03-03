@@ -59,6 +59,22 @@ object NativeTypes {
     }
 
     /**
+     * Group status. Free with wispers_group_status_free().
+     */
+    @Structure.FieldOrder("action", "nodes", "nodesCount")
+    open class WispersGroupStatus : Structure {
+        @JvmField var action: Int = 0       // WispersActivationAction enum
+        @JvmField var nodes: Pointer? = null
+        @JvmField var nodesCount: Long = 0  // size_t
+
+        constructor() : super()
+        constructor(p: Pointer) : super(p)
+
+        class ByReference : WispersGroupStatus(), Structure.ByReference
+        class ByValue : WispersGroupStatus(), Structure.ByValue
+    }
+
+    /**
      * Host-provided storage callbacks.
      */
     @Structure.FieldOrder(

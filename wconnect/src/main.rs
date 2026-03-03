@@ -406,15 +406,15 @@ async fn nodes(hub_override: Option<&str>, profile: &str) -> Result<()> {
     }
 
     let cg_id = node.connectivity_group_id().unwrap();
-    let nodes = node.list_nodes().await.context("failed to list nodes")?;
+    let status = node.group_status().await.context("failed to get group status")?;
 
-    if nodes.is_empty() {
+    if status.nodes.is_empty() {
         println!("No nodes in connectivity group.");
         return Ok(());
     }
 
-    println!("Nodes in connectivity group {}:", cg_id);
-    for info in nodes {
+    println!("Nodes in connectivity group {} (action: {:?}):", cg_id, status.action);
+    for info in status.nodes {
         let name = if info.name.is_empty() {
             "(unnamed)".to_string()
         } else {

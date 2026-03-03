@@ -5,7 +5,9 @@ import dev.wispers.connect.internal.CallbackBridge
 import dev.wispers.connect.internal.Callbacks
 import dev.wispers.connect.internal.NativeLibrary
 import dev.wispers.connect.internal.NativeTypes
+import dev.wispers.connect.types.ActivationAction
 import dev.wispers.connect.types.ActivationStatus
+import dev.wispers.connect.types.GroupStatus
 import dev.wispers.connect.types.NodeInfo
 import dev.wispers.connect.types.NodeState
 import dev.wispers.connect.types.WispersException
@@ -19,8 +21,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  *
  * Available operations depend on the current state:
  * - **Pending**: [register] with a registration token
- * - **Registered**: [activate] with a pairing code, [listNodes], [startServing] (for bootstrap)
- * - **Activated**: [listNodes], [startServing], [connectUdp], [connectQuic]
+ * - **Registered**: [activate] with a pairing code, [groupStatus], [startServing] (for bootstrap)
+ * - **Activated**: [groupStatus], [startServing], [connectUdp], [connectQuic]
  *
  * The node remains valid across state transitions. Call [close] when done,
  * or use [logout] to deregister and invalidate the node.
@@ -100,39 +102,40 @@ class Node internal constructor(
     }
 
     /**
-     * List all nodes in the connectivity group.
+     * Get the group's activation status and node list.
      *
      * Requires [NodeState.Registered] or [NodeState.Activated].
      *
-     * @return List of nodes in the connectivity group
+     * @return The group status including activation action and node list
      * @throws WispersException.InvalidState if in Pending state
      * @throws WispersException.HubError on hub communication failure
      */
-    suspend fun listNodes(): List<NodeInfo> {
-        val listPtr = suspendCancellableCoroutine<Any?> { cont ->
+    suspend fun groupStatus(): GroupStatus {
+        val gsPtr = suspendCancellableCoroutine<Any?> { cont ->
             val ptr = requireOpen()
             val ctx = CallbackBridge.register(cont)
 
-            val status = lib.wispers_node_list_nodes_async(ptr, ctx, Callbacks.nodeList)
+            val status = lib.wispers_node_group_status_async(ptr, ctx, Callbacks.groupStatus)
             if (status != WispersStatus.SUCCESS.code) {
                 CallbackBridge.resumeException(ctx, WispersException.fromStatus(status))
             }
-        } as? Pointer ?: return emptyList()
+        } as? Pointer ?: return GroupStatus(ActivationAction.Alone, emptyList())
 
         try {
-            val nodeList = NativeTypes.WispersNodeList(listPtr)
-            nodeList.read()
+            val gs = NativeTypes.WispersGroupStatus(gsPtr)
+            gs.read()
 
-            val count = nodeList.count.toInt()
-            if (count == 0 || nodeList.nodes == null) {
-                return emptyList()
+            val action = ActivationAction.fromCode(gs.action)
+            val count = gs.nodesCount.toInt()
+            if (count == 0 || gs.nodes == null) {
+                return GroupStatus(action, emptyList())
             }
 
-            val nodeArray = NativeTypes.WispersNode(nodeList.nodes!!)
+            val nodeArray = NativeTypes.WispersNode(gs.nodes!!)
             nodeArray.read()
             val nodes = nodeArray.toArray(count) as Array<*>
 
-            return nodes.map { s ->
+            val nodeInfos = nodes.map { s ->
                 val node = s as NativeTypes.WispersNode
                 NodeInfo(
                     nodeNumber = node.nodeNumber,
@@ -143,8 +146,10 @@ class Node internal constructor(
                     isOnline = node.isOnline != 0.toByte()
                 )
             }
+
+            return GroupStatus(action, nodeInfos)
         } finally {
-            lib.wispers_node_list_free(listPtr)
+            lib.wispers_group_status_free(gsPtr)
         }
     }
 

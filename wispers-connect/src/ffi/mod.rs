@@ -15,16 +15,16 @@ mod types;
 
 // Re-export types
 pub use types::{
-    wispers_node_list_free, wispers_registration_info_free, wispers_string_free,
-    CallbackContext, WispersCallback, WispersInitCallback, WispersNode, WispersNodeHandle,
-    WispersNodeList, WispersNodeListCallback, WispersNodeState, WispersNodeStorageHandle,
-    WispersRegistrationInfo, WISPERS_ACTIVATION_ACTIVATED, WISPERS_ACTIVATION_NOT_ACTIVATED,
-    WISPERS_ACTIVATION_UNKNOWN,
+    wispers_group_status_free, wispers_node_list_free, wispers_registration_info_free,
+    wispers_string_free, CallbackContext, WispersActivationAction, WispersCallback,
+    WispersGroupStatus, WispersGroupStatusCallback, WispersInitCallback, WispersNode,
+    WispersNodeHandle, WispersNodeList, WispersNodeState, WispersNodeStorageHandle,
+    WispersRegistrationInfo,
 };
 
 // Re-export node functions
 pub use node::{
-    wispers_node_activate_async, wispers_node_free, wispers_node_list_nodes_async,
+    wispers_node_activate_async, wispers_node_free, wispers_node_group_status_async,
     wispers_node_logout_async, wispers_node_register_async, wispers_node_state,
     wispers_storage_free, wispers_storage_new_in_memory, wispers_storage_new_with_callbacks,
     wispers_storage_override_hub_addr, wispers_storage_read_registration,

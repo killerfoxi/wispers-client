@@ -115,11 +115,11 @@ object Callbacks {
     }
 
     /**
-     * Node list callback - resumes with Pointer to node list on success.
+     * Group status callback - resumes with Pointer to group status on success.
      */
-    val nodeList = NativeCallbacks.WispersNodeListCallback { ctx, status, errorDetail, list ->
+    val groupStatus = NativeCallbacks.WispersGroupStatusCallback { ctx, status, errorDetail, groupStatus ->
         if (status == WispersStatus.SUCCESS.code) {
-            CallbackBridge.resumeSuccess(ctx, list)
+            CallbackBridge.resumeSuccess(ctx, groupStatus)
         } else {
             CallbackBridge.resumeException(ctx, WispersException.fromStatus(status, errorDetail))
         }

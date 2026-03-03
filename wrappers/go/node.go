@@ -87,13 +87,13 @@ func (n *Node) Logout() error {
 	return nil
 }
 
-// ListNodes lists all nodes in the connectivity group.
+// GroupStatus returns the group's activation status and node list.
 // Requires Registered or Activated state.
-func (n *Node) ListNodes() ([]NodeInfo, error) {
+func (n *Node) GroupStatus() (*GroupStatus, error) {
 	ptr := n.requireOpen()
 	call := newPendingCall()
 	defer call.cancel()
-	status := C.callListNodesAsync(
+	status := C.callGroupStatusAsync(
 		(*C.WispersNodeHandle)(ptr),
 		call.ctx(),
 	)
@@ -104,8 +104,8 @@ func (n *Node) ListNodes() ([]NodeInfo, error) {
 	switch v := call.wait().(type) {
 	case error:
 		return nil, v
-	case []NodeInfo:
-		return v, nil
+	case groupStatusResult:
+		return &GroupStatus{Action: v.action, Nodes: v.nodes}, nil
 	default:
 		panic("wispers: unexpected bridge result type")
 	}

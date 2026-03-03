@@ -17,7 +17,7 @@ use crate::roster::{
     build_activation_payload, create_activation_roster, create_bootstrap_roster, verify_roster,
 };
 use crate::storage::{NodeStateStore, SharedStore};
-use crate::types::{ConnectivityGroupId, NodeInfo, NodeRegistration, PersistedNodeState};
+use crate::types::{ActivationAction, ConnectivityGroupId, GroupStatus, NodeInfo, NodeRegistration, PersistedNodeState};
 use prost::Message;
 
 /// Default hub address for production use.
@@ -419,53 +419,93 @@ impl Node {
     // Registered operations
     // -------------------------------------------------------------------------
 
-    /// List all nodes in the connectivity group.
+    /// Get the group's activation status and node list.
     ///
     /// Requires: Registered or Activated state.
     ///
-    /// Returns combined information about each node:
-    /// - Basic info (node_number, name, last_seen) from the hub
-    /// - Activation status from the roster (if this node is activated)
-    /// - `is_self` indicates whether this is the current node
-    pub async fn list_nodes(&self) -> Result<Vec<NodeInfo>, NodeStateError> {
+    /// Fetches the hub node list and roster, analyzes activation state, and
+    /// returns a unified [`GroupStatus`] containing both the recommended action
+    /// and the full node list. This replaces the former `list_nodes()` method.
+    pub async fn group_status(&self) -> Result<GroupStatus, NodeStateError> {
         use crate::hub::HubClient;
+        use crate::roster::active_nodes;
 
         let registration = self.require_at_least_registered()?;
         let mut client = HubClient::connect(self.hub_addr())
             .await
             .map_err(NodeStateError::hub)?;
+
         let hub_nodes = client
             .list_nodes(registration)
             .await
             .map_err(NodeStateError::hub)?;
 
-        // Build a set of activated node numbers from the roster (if available)
-        let activated_nodes: Option<std::collections::HashSet<i32>> =
-            self.roster.as_ref().map(|r| {
-                r.nodes
-                    .iter()
-                    .filter(|n| !n.revoked)
-                    .map(|n| n.node_number)
-                    .collect()
-            });
+        let roster = client
+            .get_unverified_roster(registration)
+            .await
+            .map_err(NodeStateError::hub)?;
+
+        // Build a set of activated (non-revoked) roster node numbers
+        let activated_set: std::collections::HashSet<i32> =
+            active_nodes(&roster).map(|n| n.node_number).collect();
+
+        // Build a set of hub-registered node numbers
+        let hub_numbers: std::collections::HashSet<i32> =
+            hub_nodes.iter().map(|n| n.node_number).collect();
+
+        // Detect dead roster: version > 0 but no active roster member is still
+        // registered with the hub.
+        let is_dead_roster = roster.version > 0
+            && !activated_set.iter().any(|n| hub_numbers.contains(n));
 
         let my_node_number = registration.node_number;
+        let self_activated = activated_set.contains(&my_node_number) && !is_dead_roster;
 
-        let nodes = hub_nodes
+        let nodes: Vec<NodeInfo> = hub_nodes
             .into_iter()
-            .map(|hub_node| NodeInfo {
-                node_number: hub_node.node_number,
-                name: hub_node.name,
-                is_self: hub_node.node_number == my_node_number,
-                is_activated: activated_nodes
-                    .as_ref()
-                    .map(|set| set.contains(&hub_node.node_number)),
-                last_seen_at_millis: hub_node.last_seen_at_millis,
-                is_online: hub_node.is_online,
+            .map(|hub_node| {
+                let is_activated = if is_dead_roster {
+                    // Dead roster — treat everyone as not activated
+                    Some(false)
+                } else if roster.version == 0 && activated_set.is_empty() {
+                    // Empty roster — we have no activation info yet, but we
+                    // know nobody is activated
+                    Some(false)
+                } else if self_activated {
+                    // We're activated — we can see the roster
+                    Some(activated_set.contains(&hub_node.node_number))
+                } else {
+                    // We're not activated — we can't trust the roster for others
+                    None
+                };
+                NodeInfo {
+                    node_number: hub_node.node_number,
+                    name: hub_node.name,
+                    is_self: hub_node.node_number == my_node_number,
+                    is_activated,
+                    last_seen_at_millis: hub_node.last_seen_at_millis,
+                    is_online: hub_node.is_online,
+                }
             })
             .collect();
 
-        Ok(nodes)
+        // Determine the activation action
+        let action = if nodes.len() <= 1 {
+            ActivationAction::Alone
+        } else if activated_set.is_empty() || is_dead_roster {
+            ActivationAction::Bootstrap
+        } else if !self_activated {
+            ActivationAction::NeedActivation
+        } else {
+            let all_activated = nodes.iter().all(|n| n.is_activated == Some(true));
+            if all_activated {
+                ActivationAction::AllActivated
+            } else {
+                ActivationAction::CanEndorse
+            }
+        };
+
+        Ok(GroupStatus { action, nodes })
     }
 
     /// Start a serving session.
@@ -581,8 +621,21 @@ impl Node {
             .await
             .map_err(NodeStateError::hub)?;
 
-        // Verify the base roster if not bootstrap (version > 0)
-        if current_roster.version > 0 {
+        // Detect dead roster: version > 0 but no non-revoked member is still
+        // registered with the hub.
+        let is_dead_roster = current_roster.version > 0 && {
+            use crate::roster::active_nodes;
+            let hub_nodes = client
+                .list_nodes(&registration)
+                .await
+                .map_err(NodeStateError::hub)?;
+            let hub_numbers: std::collections::HashSet<i32> =
+                hub_nodes.iter().map(|n| n.node_number).collect();
+            !active_nodes(&current_roster).any(|n| hub_numbers.contains(&n.node_number))
+        };
+
+        // Verify the base roster if not bootstrap and not dead
+        if current_roster.version > 0 && !is_dead_roster {
             verify_roster(
                 &current_roster,
                 endorser_node_number,
@@ -603,7 +656,7 @@ impl Node {
         let new_node_signature = self.signing_key.sign(&activation_payload_bytes);
 
         // Build the new roster
-        let new_roster = if current_roster.version == 0 {
+        let new_roster = if current_roster.version == 0 || is_dead_roster {
             create_bootstrap_roster(
                 endorser_node_number,
                 &response_payload.public_key_spki,

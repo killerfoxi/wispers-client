@@ -38,6 +38,34 @@ const (
 	ActivationActivated    ActivationStatus = 2
 )
 
+// ActivationAction represents what action the calling node should take.
+type ActivationAction int32
+
+const (
+	ActivationActionAlone          ActivationAction = 0
+	ActivationActionBootstrap      ActivationAction = 1
+	ActivationActionNeedActivation ActivationAction = 2
+	ActivationActionCanEndorse     ActivationAction = 3
+	ActivationActionAllActivated   ActivationAction = 4
+)
+
+func (a ActivationAction) String() string {
+	switch a {
+	case ActivationActionAlone:
+		return "Alone"
+	case ActivationActionBootstrap:
+		return "Bootstrap"
+	case ActivationActionNeedActivation:
+		return "NeedActivation"
+	case ActivationActionCanEndorse:
+		return "CanEndorse"
+	case ActivationActionAllActivated:
+		return "AllActivated"
+	default:
+		return "Unknown"
+	}
+}
+
 // NodeInfo contains information about a node in the connectivity group.
 type NodeInfo struct {
 	NodeNumber       int32
@@ -46,6 +74,12 @@ type NodeInfo struct {
 	ActivationStatus ActivationStatus
 	LastSeenAtMillis int64
 	IsOnline         bool
+}
+
+// GroupStatus is a snapshot of the connectivity group's activation state.
+type GroupStatus struct {
+	Action ActivationAction
+	Nodes  []NodeInfo
 }
 
 // RegistrationInfo contains registration information for a node.
@@ -67,6 +101,12 @@ type startServingResult struct {
 	servingPtr  unsafe.Pointer
 	sessionPtr  unsafe.Pointer
 	incomingPtr unsafe.Pointer
+}
+
+// groupStatusResult is the internal type sent through the bridge channel for GroupStatus.
+type groupStatusResult struct {
+	action ActivationAction
+	nodes  []NodeInfo
 }
 
 // dataResult is the internal type sent through the bridge channel for data callbacks.

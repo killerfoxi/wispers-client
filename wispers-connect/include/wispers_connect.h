@@ -93,35 +93,58 @@ typedef void (*WispersInitCallback)(
 );
 
 //------------------------------------------------------------------------------
-// Node info (returned by list_nodes)
+// Node info
 //------------------------------------------------------------------------------
 
 // Information about a node in the connectivity group.
 typedef struct {
     int32_t node_number;
-    char *name;                          // Owned, freed by wispers_node_list_free()
+    char *name;                          // Owned, freed by wispers_group_status_free()
     bool is_self;                        // Whether this is the current node
     int32_t activation_status;           // WispersActivationStatus value
     int64_t last_seen_at_millis;
     bool is_online;                      // Whether the node is connected to the hub
 } WispersNode;
 
-// List of nodes. Free with wispers_node_list_free().
+//------------------------------------------------------------------------------
+// Group status (returned by group_status)
+//------------------------------------------------------------------------------
+
+// What action the calling node should take regarding activation.
+typedef enum {
+    WISPERS_ACTIVATION_ACTION_ALONE = 0,           // Only node in the group
+    WISPERS_ACTIVATION_ACTION_BOOTSTRAP = 1,       // No activated nodes (empty or dead roster)
+    WISPERS_ACTIVATION_ACTION_NEED_ACTIVATION = 2, // Need a code from an activated peer
+    WISPERS_ACTIVATION_ACTION_CAN_ENDORSE = 3,     // Can endorse unactivated peers
+    WISPERS_ACTIVATION_ACTION_ALL_ACTIVATED = 4,    // All nodes activated
+} WispersActivationAction;
+
+// Snapshot of the connectivity group's activation state.
+// Free with wispers_group_status_free().
+typedef struct {
+    WispersActivationAction action;
+    WispersNode *nodes;
+    size_t nodes_count;
+} WispersGroupStatus;
+
+// Free a group status and all contained strings.
+void wispers_group_status_free(WispersGroupStatus *group_status);
+
+// Callback that receives a group status.
+typedef void (*WispersGroupStatusCallback)(
+    void *ctx,
+    WispersStatus status,
+    const char *error_detail,
+    WispersGroupStatus *group_status
+);
+
+// Legacy node list types (kept for ABI compatibility).
 typedef struct {
     WispersNode *nodes;
     size_t count;
 } WispersNodeList;
 
-// Free a node list and all contained strings.
 void wispers_node_list_free(WispersNodeList *list);
-
-// Callback that receives a node list.
-typedef void (*WispersNodeListCallback)(
-    void *ctx,
-    WispersStatus status,
-    const char *error_detail,
-    WispersNodeList *list
-);
 
 // Callback for start_serving that receives session components.
 // serving_handle and session are always provided on success.
@@ -268,15 +291,16 @@ WispersStatus wispers_node_logout_async(
     WispersCallback callback
 );
 
-// List all nodes in the connectivity group.
+// Get the group's activation status and node list.
 // Requires: Registered or Activated state. Returns INVALID_STATE if Pending.
 // The node handle is NOT consumed and remains valid after this call.
-// On success, callback receives a WispersNodeList that must be freed.
+// On success, callback receives a WispersGroupStatus that must be freed
+// with wispers_group_status_free().
 // Returns SUCCESS immediately if the async operation was started.
-WispersStatus wispers_node_list_nodes_async(
+WispersStatus wispers_node_group_status_async(
     WispersNodeHandle *handle,
     void *ctx,
-    WispersNodeListCallback callback
+    WispersGroupStatusCallback callback
 );
 
 // Start a serving session.

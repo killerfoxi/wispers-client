@@ -7,7 +7,7 @@
 use crate::errors::{NodeStateError, WispersStatus};
 use crate::node::{Node, NodeStorage};
 use crate::storage::StorageError;
-use crate::types::{NodeInfo, NodeRegistration};
+use crate::types::{ActivationAction, GroupStatus, NodeRegistration};
 use std::ffi::{c_void, CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
@@ -80,16 +80,6 @@ pub type WispersInitCallback = Option<
         error_detail: *const c_char,
         handle: *mut WispersNodeHandle,
         state: WispersNodeState,
-    ),
->;
-
-/// Callback that receives a node list.
-pub type WispersNodeListCallback = Option<
-    unsafe extern "C" fn(
-        ctx: *mut c_void,
-        status: WispersStatus,
-        error_detail: *const c_char,
-        list: *mut WispersNodeList,
     ),
 >;
 
@@ -188,42 +178,6 @@ pub struct WispersNodeList {
     pub count: usize,
 }
 
-impl WispersNodeList {
-    /// Create from a Vec<NodeInfo>, allocating C strings.
-    pub(crate) fn from_node_infos(nodes: Vec<NodeInfo>) -> Result<Self, WispersStatus> {
-        let count = nodes.len();
-        if count == 0 {
-            return Ok(Self {
-                nodes: ptr::null_mut(),
-                count: 0,
-            });
-        }
-
-        let mut c_nodes: Vec<WispersNode> = Vec::with_capacity(count);
-        for node in nodes {
-            let name = CString::new(node.name).map_err(|_| WispersStatus::InvalidUtf8)?;
-            let activation_status = match node.is_activated {
-                None => WISPERS_ACTIVATION_UNKNOWN,
-                Some(false) => WISPERS_ACTIVATION_NOT_ACTIVATED,
-                Some(true) => WISPERS_ACTIVATION_ACTIVATED,
-            };
-            c_nodes.push(WispersNode {
-                node_number: node.node_number,
-                name: name.into_raw(),
-                is_self: node.is_self,
-                activation_status,
-                last_seen_at_millis: node.last_seen_at_millis,
-                is_online: node.is_online,
-            });
-        }
-
-        let ptr = c_nodes.as_mut_ptr();
-        std::mem::forget(c_nodes);
-
-        Ok(Self { nodes: ptr, count })
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn wispers_node_list_free(list: *mut WispersNodeList) {
     if list.is_null() {
@@ -242,6 +196,114 @@ pub extern "C" fn wispers_node_list_free(list: *mut WispersNodeList) {
         }
         list.nodes = ptr::null_mut();
         list.count = 0;
+    }
+}
+
+// =============================================================================
+// Group status
+// =============================================================================
+
+/// Activation action indicator for FFI.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum WispersActivationAction {
+    Alone = 0,
+    Bootstrap = 1,
+    NeedActivation = 2,
+    CanEndorse = 3,
+    AllActivated = 4,
+}
+
+impl From<&ActivationAction> for WispersActivationAction {
+    fn from(action: &ActivationAction) -> Self {
+        match action {
+            ActivationAction::Alone => Self::Alone,
+            ActivationAction::Bootstrap => Self::Bootstrap,
+            ActivationAction::NeedActivation => Self::NeedActivation,
+            ActivationAction::CanEndorse => Self::CanEndorse,
+            ActivationAction::AllActivated => Self::AllActivated,
+        }
+    }
+}
+
+/// Group status returned to C callers.
+#[repr(C)]
+pub struct WispersGroupStatus {
+    pub action: WispersActivationAction,
+    pub nodes: *mut WispersNode,
+    pub nodes_count: usize,
+}
+
+impl WispersGroupStatus {
+    /// Create from a GroupStatus, allocating C strings.
+    pub(crate) fn from_group_status(status: GroupStatus) -> Result<Self, WispersStatus> {
+        let action = WispersActivationAction::from(&status.action);
+        let count = status.nodes.len();
+
+        if count == 0 {
+            return Ok(Self {
+                action,
+                nodes: ptr::null_mut(),
+                nodes_count: 0,
+            });
+        }
+
+        let mut c_nodes: Vec<WispersNode> = Vec::with_capacity(count);
+        for node in status.nodes {
+            let name = CString::new(node.name).map_err(|_| WispersStatus::InvalidUtf8)?;
+            let activation_status = match node.is_activated {
+                None => WISPERS_ACTIVATION_UNKNOWN,
+                Some(false) => WISPERS_ACTIVATION_NOT_ACTIVATED,
+                Some(true) => WISPERS_ACTIVATION_ACTIVATED,
+            };
+            c_nodes.push(WispersNode {
+                node_number: node.node_number,
+                name: name.into_raw(),
+                is_self: node.is_self,
+                activation_status,
+                last_seen_at_millis: node.last_seen_at_millis,
+                is_online: node.is_online,
+            });
+        }
+
+        let nodes_ptr = c_nodes.as_mut_ptr();
+        std::mem::forget(c_nodes);
+
+        Ok(Self {
+            action,
+            nodes: nodes_ptr,
+            nodes_count: count,
+        })
+    }
+}
+
+/// Callback that receives a group status.
+pub type WispersGroupStatusCallback = Option<
+    unsafe extern "C" fn(
+        ctx: *mut c_void,
+        status: WispersStatus,
+        error_detail: *const c_char,
+        group_status: *mut WispersGroupStatus,
+    ),
+>;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_group_status_free(group_status: *mut WispersGroupStatus) {
+    if group_status.is_null() {
+        return;
+    }
+    unsafe {
+        let gs = &mut *group_status;
+        if !gs.nodes.is_null() && gs.nodes_count > 0 {
+            let nodes = Vec::from_raw_parts(gs.nodes, gs.nodes_count, gs.nodes_count);
+            for node in nodes {
+                if !node.name.is_null() {
+                    drop(CString::from_raw(node.name));
+                }
+            }
+        }
+        gs.nodes = ptr::null_mut();
+        gs.nodes_count = 0;
     }
 }
 

@@ -133,6 +133,29 @@ pub struct NodeInfo {
     pub is_online: bool,
 }
 
+/// What action the calling node should take regarding activation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActivationAction {
+    /// Only node in the group — nothing to activate with.
+    Alone,
+    /// No activated nodes (empty or dead roster). Any node can pair with any
+    /// other. The client decides which node generates the pairing code.
+    Bootstrap,
+    /// Roster exists with activated peers — this node needs a code from one.
+    NeedActivation,
+    /// This node is activated; unactivated peers exist that can be endorsed.
+    CanEndorse,
+    /// All nodes in the group are activated.
+    AllActivated,
+}
+
+/// Snapshot of the connectivity group's activation state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupStatus {
+    pub action: ActivationAction,
+    pub nodes: Vec<NodeInfo>,
+}
+
 /// Snapshot of all persisted node state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersistedNodeState {
