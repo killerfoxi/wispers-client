@@ -11,20 +11,18 @@ enum class WispersStatus(val code: Int) {
     STORE_ERROR(3),
     ALREADY_REGISTERED(4),
     NOT_REGISTERED(5),
-    @Deprecated("Use INVALID_STATE instead", ReplaceWith("INVALID_STATE"))
-    UNEXPECTED_STAGE(6),
-    NOT_FOUND(7),
-    BUFFER_TOO_SMALL(8),
-    MISSING_CALLBACK(9),
-    INVALID_PAIRING_CODE(10),
-    ACTIVATION_FAILED(11),
-    HUB_ERROR(12),
-    CONNECTION_FAILED(13),
-    TIMEOUT(14),
-    INVALID_STATE(15),
-    UNAUTHENTICATED(16),
-    PEER_REJECTED(17),
-    PEER_UNAVAILABLE(18);
+    NOT_FOUND(6),
+    BUFFER_TOO_SMALL(7),
+    MISSING_CALLBACK(8),
+    INVALID_PAIRING_CODE(9),
+    ACTIVATION_FAILED(10),
+    HUB_ERROR(11),
+    CONNECTION_FAILED(12),
+    TIMEOUT(13),
+    INVALID_STATE(14),
+    UNAUTHENTICATED(15),
+    PEER_REJECTED(16),
+    PEER_UNAVAILABLE(17);
 
     companion object {
         private val codeMap = entries.associateBy { it.code }

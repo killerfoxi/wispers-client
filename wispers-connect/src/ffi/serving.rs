@@ -367,7 +367,7 @@ pub extern "C" fn wispers_serving_session_run_async(
         Some(s) => s,
         None => {
             // Session was already consumed
-            return WispersStatus::UnexpectedStage;
+            return WispersStatus::InvalidState;
         }
     };
     let ctx = CallbackContext(ctx);

@@ -30,12 +30,6 @@ sealed class WispersException(
     class NotRegistered(message: String = "Node is not registered") :
         WispersException(message, WispersStatus.NOT_REGISTERED)
 
-    /** Operation not valid in current state. */
-    @Deprecated("Use InvalidState instead")
-    class UnexpectedStage(message: String = "Unexpected stage") :
-        @Suppress("DEPRECATION")
-        WispersException(message, WispersStatus.UNEXPECTED_STAGE)
-
     /** Requested resource not found. */
     class NotFound(message: String = "Not found") :
         WispersException(message, WispersStatus.NOT_FOUND)
@@ -109,7 +103,6 @@ sealed class WispersException(
          * @param detail Optional human-readable detail from the Rust library.
          *               When provided, used as the exception message instead of the default.
          */
-        @Suppress("DEPRECATION")
         fun fromStatus(status: WispersStatus, detail: String? = null): WispersException = when (status) {
             WispersStatus.SUCCESS -> throw IllegalArgumentException("Cannot create exception for SUCCESS")
             WispersStatus.NULL_POINTER -> NullPointer(detail ?: "Null pointer")
@@ -117,7 +110,6 @@ sealed class WispersException(
             WispersStatus.STORE_ERROR -> StoreError(detail ?: "Storage error")
             WispersStatus.ALREADY_REGISTERED -> AlreadyRegistered(detail ?: "Node is already registered")
             WispersStatus.NOT_REGISTERED -> NotRegistered(detail ?: "Node is not registered")
-            WispersStatus.UNEXPECTED_STAGE -> UnexpectedStage(detail ?: "Unexpected stage")
             WispersStatus.NOT_FOUND -> NotFound(detail ?: "Not found")
             WispersStatus.BUFFER_TOO_SMALL -> BufferTooSmall(detail ?: "Buffer too small")
             WispersStatus.MISSING_CALLBACK -> MissingCallback(detail ?: "Missing callback")

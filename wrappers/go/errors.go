@@ -12,19 +12,18 @@ const (
 	StatusStoreError         Status = 3
 	StatusAlreadyRegistered  Status = 4
 	StatusNotRegistered      Status = 5
-	StatusUnexpectedStage    Status = 6 // Deprecated
-	StatusNotFound           Status = 7
-	StatusBufferTooSmall     Status = 8
-	StatusMissingCallback    Status = 9
-	StatusInvalidPairingCode Status = 10
-	StatusActivationFailed   Status = 11
-	StatusHubError           Status = 12
-	StatusConnectionFailed   Status = 13
-	StatusTimeout            Status = 14
-	StatusInvalidState       Status = 15
-	StatusUnauthenticated    Status = 16
-	StatusPeerRejected       Status = 17
-	StatusPeerUnavailable    Status = 18
+	StatusNotFound           Status = 6
+	StatusBufferTooSmall     Status = 7
+	StatusMissingCallback    Status = 8
+	StatusInvalidPairingCode Status = 9
+	StatusActivationFailed   Status = 10
+	StatusHubError           Status = 11
+	StatusConnectionFailed   Status = 12
+	StatusTimeout            Status = 13
+	StatusInvalidState       Status = 14
+	StatusUnauthenticated    Status = 15
+	StatusPeerRejected       Status = 16
+	StatusPeerUnavailable    Status = 17
 )
 
 // Error wraps a non-success WispersStatus code with optional detail.
