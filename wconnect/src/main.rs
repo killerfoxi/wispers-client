@@ -296,8 +296,6 @@ async fn register(hub_override: Option<&str>, profile: &str, token: &str) -> Res
 }
 
 async fn activate(hub_override: Option<&str>, profile: &str, activation_code: &str) -> Result<()> {
-    use wispers_connect::ActivationCode;
-
     let storage = get_storage(hub_override, profile)?;
     let mut node = storage
         .restore_or_init_node()
@@ -318,15 +316,16 @@ async fn activate(hub_override: Option<&str>, profile: &str, activation_code: &s
         }
     }
 
-    // Parse activation code to check for self-endorsement
-    let parsed_code = ActivationCode::parse(activation_code)
-        .context("invalid activation code format")?;
-    let our_node_number = node.node_number().unwrap();
-    if parsed_code.node_number == our_node_number {
-        anyhow::bail!(
-            "Cannot activate using your own activation code (self-endorsement). \
-             You need an activation code from a different node."
-        );
+    // Check for self-endorsement (code format is "node_number-secret")
+    if let Some(peer_str) = activation_code.split('-').next() {
+        if let Ok(peer_node) = peer_str.parse::<i32>() {
+            if peer_node == node.node_number().unwrap() {
+                anyhow::bail!(
+                    "Cannot activate using your own activation code (self-endorsement). \
+                     You need an activation code from a different node."
+                );
+            }
+        }
     }
 
     println!("Activating with activation code {}...", activation_code);
