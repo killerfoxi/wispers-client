@@ -26,8 +26,7 @@ a peer-to-peer connection.
 ### 0. Prerequisites
 
 - A local clone of the `wispers-connect` repository (this one)
-- A [Rust development environment](https://rust-lang.org/tools/install/). We'll
-  use terminal commands, but feel free to use your IDE of choice.
+- The build prerequisites listed under [Building](#building) below
 
 ### 1. Get a Connect account & API key
 
@@ -173,9 +172,40 @@ peer-to-peer connection!
 
 ## Building
 
-<!-- TODO: cover building the Rust library, cross-compiling for Android
-     (cargo-ndk), and linking from Go/Kotlin. Keep it short — point to
-     HOW_TO_USE.md for wrapper-specific setup. -->
+### Rust library & CLI tools
+
+Prerequisites: a [Rust toolchain](https://rust-lang.org/tools/install/) and CMake (for the bundled libjuice ICE library). Protobuf compilation is handled automatically by `tonic-build` during `cargo build`.
+
+```bash
+cargo build          # library + wconnect + wcadm
+cargo test           # run all tests
+```
+
+The workspace produces three artifacts:
+
+| Crate | Type | Description |
+|-------|------|-------------|
+| `wispers-connect` | lib (`rlib` + `cdylib`) | Core library; the `cdylib` output is the shared library used by language wrappers |
+| `wcadm` | binary | Admin CLI for managing domains and groups via the REST API |
+| `wconnect` | binary | CLI tool for node operations |
+
+### Language wrappers
+
+Wrappers live in `wrappers/` and link against the shared library built above.
+
+**Go** (`wrappers/go/`) — uses CGo. Build the Rust library first, then:
+
+```bash
+cd wrappers/go && make build
+```
+
+**Kotlin/Android** (`wrappers/kotlin/`) — uses JNA. Build with Gradle; requires a pre-built `libwispers_connect.so` for your target ABI. Cross-compile the Rust library with the Android NDK (`ANDROID_NDK_HOME` environment variable) and [cargo-ndk](https://github.com/nickelc/cargo-ndk):
+
+```bash
+cargo ndk -t arm64-v8a build
+```
+
+See **[How to use it](docs/HOW_TO_USE.md)** for wrapper-specific integration details.
 
 ## License
 
