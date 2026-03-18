@@ -164,182 +164,6 @@ protocol. Some options:
 
 Sometimes, things will go awry. Here's how to deal with some common scenarios:
 
-* Hub unreachable   * `nodeName` — Optional display name for the node.
-  * `nodeMetadata` — Optional metadata (max 256 chars), in a format defined by
-	yourself. JSON blobs work well here (e.g. `{"nodeType": "mobile"}`).
-* `PATCH /connectivity-groups/:id/nodes/:nodeNumber` — Update a node.\
-  Parameters:
-  * `name` — New display name.
-
-## Using the library
-
-### Storage
-
-A Wispers Connect node has very little state, but that state should get stored
-securely. The library only comes with two built-in options, in-memory for
-testing, and file-based for CLI tools. For everything else, you need to provide
-your own implementation — either by implementing the `NodeStateStore` trait in
-Rust, or by implementing the equivalent FFI storage callbacks from a wrapper
-language. If possible, you'll want to use your platform's secure storage, like
-for example the macOS Keychain.
-
-The Kotlin wrapper implementation contains an example: See
-`/wrappers/kotlin/src/main/kotlin/dev/wispers/connect/storage`
-
-### Node lifecycle
-
-The main object you'll deal with is the `Node`. It can be in various lifecycle
-states: "pending", "registered", "activated". The typical flow to get a Node up
-and running is this:
-
-1. Instantiate a `NodeStorage` object using your storage implementation, then
-   call `restore_or_init_node()` on it. This will read the state from storage
-   (or if that's empty, initialise it as "pending") and return a Node.
-2. Get the Node into the "activated" state.
-   * If the Node is "pending", get a registration token and call
-	 `node.register(token)`
-   * If the Node is "registered", get an activation code and call
-	 `node.activate(code)`
-3. Once the node is activated (check `node.state()`), it's fully functional. You
-   can
-   * `start_serving()` to wait for other nodes to open connections to this one
-   * `connect_quic()` or `connect_udp()` to open a peer-to-peer connection to
-	 another node
-   * Query `group_info()` to get the state of all nodes in the connectivity
-	 group
-
-If you need to reset a node, you can also call `logout()`. This will revoke the
-node's entry from the roster and deregister the node from the hub.
-
-To understand what the different node states really mean, check out the
-explanation in [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
-
-### Serving
-
-For a node to be reachable it has to be "serving". That is, it has to be
-connected to the hub and wait for connection requests. Call
-`node.start_serving()` to kick this off. You get back three objects:
-
-* The `ServingSession` is the runner. Note that you _have to run it_ for things
-  to work, for example with `tokio::spawn(session.run())` if you're using the
-  Rust interface directly.
-* The `ServingHandle` lets you talk to the running serving session (`status()`,
-  `generate_activation_code()`, `shutdown()`).
-* The `IncomingConnections` object lets you handle connections from peer nodes.
-  The Rust interface provides the channels `udp` and `quic` for this purpose,
-  giving you `UdpConnection` and `QuicConnection` objects, respectively.
-
-What to do with incoming connections is entirely up to you. You can design any
-protocol you like.
-
-### Opening connections
-
-To connect to another node, call `node.connect_quic(target_node)` or
-`node.connect_udp(target_node)`, depending on what you need. Most people will
-want the QUIC variant.
-
-Once a connection was established, it's your turn to run your app-specific
-protocol. Some options:
-
-* A good old line-oriented protocol like SMTP or FTP.
-* Varint length prefix, followed by protobuf requests. You get all the nice
-  forward- and backward compatibility of protocol buffers, but wire format
-  protocol buffers are harder to debug.
-* Send and receive JSON objects. This lies somewhere between the first two
-  options.
-
-### Error handling
-
-Sometimes, things will go awry. Here's how to deal with some common scenarios:
-
-* Hub unr  * `nodeName` — Optional display name for the node.
-  * `nodeMetadata` — Optional metadata (max 256 chars), in a format defined by
-	yourself. JSON blobs work well here (e.g. `{"nodeType": "mobile"}`).
-* `PATCH /connectivity-groups/:id/nodes/:nodeNumber` — Update a node.\
-  Parameters:
-  * `name` — New display name.
-
-## Using the library
-
-### Storage
-
-A Wispers Connect node has very little state, but that state should get stored
-securely. The library only comes with two built-in options, in-memory for
-testing, and file-based for CLI tools. For everything else, you need to provide
-your own implementation — either by implementing the `NodeStateStore` trait in
-Rust, or by implementing the equivalent FFI storage callbacks from a wrapper
-language. If possible, you'll want to use your platform's secure storage, like
-for example the macOS Keychain.
-
-The Kotlin wrapper implementation contains an example: See
-`/wrappers/kotlin/src/main/kotlin/dev/wispers/connect/storage`
-
-### Node lifecycle
-
-The main object you'll deal with is the `Node`. It can be in various lifecycle
-states: "pending", "registered", "activated". The typical flow to get a Node up
-and running is this:
-
-1. Instantiate a `NodeStorage` object using your storage implementation, then
-   call `restore_or_init_node()` on it. This will read the state from storage
-   (or if that's empty, initialise it as "pending") and return a Node.
-2. Get the Node into the "activated" state.
-   * If the Node is "pending", get a registration token and call
-	 `node.register(token)`
-   * If the Node is "registered", get an activation code and call
-	 `node.activate(code)`
-3. Once the node is activated (check `node.state()`), it's fully functional. You
-   can
-   * `start_serving()` to wait for other nodes to open connections to this one
-   * `connect_quic()` or `connect_udp()` to open a peer-to-peer connection to
-	 another node
-   * Query `group_info()` to get the state of all nodes in the connectivity
-	 group
-
-If you need to reset a node, you can also call `logout()`. This will revoke the
-node's entry from the roster and deregister the node from the hub.
-
-To understand what the different node states really mean, check out the
-explanation in [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
-
-### Serving
-
-For a node to be reachable it has to be "serving". That is, it has to be
-connected to the hub and wait for connection requests. Call
-`node.start_serving()` to kick this off. You get back three objects:
-
-* The `ServingSession` is the runner. Note that you _have to run it_ for things
-  to work, for example with `tokio::spawn(session.run())` if you're using the
-  Rust interface directly.
-* The `ServingHandle` lets you talk to the running serving session (`status()`,
-  `generate_activation_code()`, `shutdown()`).
-* The `IncomingConnections` object lets you handle connections from peer nodes.
-  The Rust interface provides the channels `udp` and `quic` for this purpose,
-  giving you `UdpConnection` and `QuicConnection` objects, respectively.
-
-What to do with incoming connections is entirely up to you. You can design any
-protocol you like.
-
-### Opening connections
-
-To connect to another node, call `node.connect_quic(target_node)` or
-`node.connect_udp(target_node)`, depending on what you need. Most people will
-want the QUIC variant.
-
-Once a connection was established, it's your turn to run your app-specific
-protocol. Some options:
-
-* A good old line-oriented protocol like SMTP or FTP.
-* Varint length prefix, followed by protobuf requests. You get all the nice
-  forward- and backward compatibility of protocol buffers, but wire format
-  protocol buffers are harder to debug.
-* Send and receive JSON objects. This lies somewhere between the first two
-  options.
-
-### Error handling
-
-Sometimes, things will go awry. Here's how to deal with some common scenarios:
-
 * State-inappropriate operations (InvalidState) — This happens if you use Node
   methods that don't match the node's current state. For example, if your node
   is "pending" or "registered", it can't open connections yet. Make sure your
@@ -366,43 +190,43 @@ Sometimes, things will go awry. Here's how to deal with some common scenarios:
 
 ## Using wconnect as a sidecar
 
-<!-- TODO: explain the sidecar pattern:
-	 - wconnect runs as a separate process alongside your app
-	 - Your app doesn't link the library at all
-	 - wconnect handles registration, activation, serving
+If you can't embed the wispers-connect library in your software, you can still
+teach your software to communicate through Wispers using the `wconnect` tool.
 
-	 ### Port forwarding
-	 - Forward a local TCP port to a peer node's port
-	 - Example: expose a dev server to a teammate's laptop
+### The server side
 
-	 ### HTTP proxying
-	 - Proxy HTTP requests to a peer node
-	 - Example: access an internal web app from outside the office
+The general pattern is to run `wconnect serve` next to a server and allow
+port-forwarding from remote Wispers nodes. There are several options:
 
-	 ### Running as a daemon
-	 - `wconnect serve -d` for background operation
-	 - Status, shutdown via Unix socket
-	 - See INTERNALS.md for daemon architecture details
--->
+* `wconnect serve --allow-port-forwarding` — Allow remote Wispers nodes to
+  connect to _any_ port on the local host.
+* `wconnect serve --allow-port-forwarding=42,4711` — Allow remote Wispers nodes
+  to connect only to ports 42 and 4711 on the local host.
 
-## Real-world examples
+If you can't run `wconnect` on the same host as the server you want to reach,
+you can also use the argument `--allow-egress` to allow connecting to an address
+(and port) that's on a different host. This can be quite useful together with
+the proxy-http and proxy-socks commands.
 
-These show how the pieces fit together in actual deployments.
+By default, `wconnect serve` stays in the foreground and logs activity to the
+terminal. You can also start it with the `--daemon` flag (or just `-d`) to make
+it run in the background. Run `wconnect serve --stop` to stop the background job
+again.
 
-### Wispers Files (library integration)
+### The client side
 
-<!-- TODO: describe the Files architecture:
-	 - Desktop app (Tauri) and Android app both embed the library
-	 - Registration via files.wispers.dev web UI + deep links
-	 - Serving runs in the background for file sync
-	 - QUIC streams for reliable file transfer
-	 - Point to the Files source as a reference -->
+On the client side, you have a few options to connect to the server we've hooked
+up to Wispers using `wconnect`:
 
-### Internal web app (wconnect sidecar)
-
-<!-- TODO: describe a concrete scenario:
-	 - A team runs an internal web app (e.g. wiki, dashboard)
-	 - One team member runs `wconnect serve` + `wconnect proxy` on the server
-	 - Other team members run `wconnect` on their laptops
-	 - The web app is now accessible across NATs without a VPN
-	 - No code changes to the web app needed -->
+* `wconnect forward <LOCAL_PORT> <NODE> <REMOTE_PORT>` gives you simple port
+  forwarding. Connections to the local port get forwarded to the given node
+  number and remote port.
+* `wconnect proxy-http` starts an HTTP CONNECT proxy that makes all nodes in the
+  connectivity group reachable under hostname `<node_number>.wispers.link`. If a
+  peer node allows egress traffic, you can also use that node to make HTTP
+  requests to arbitrary hosts that are reachable from that node — great for
+  accessing the Internet as if you were somewhere else. By default, the proxy
+  listens on port 8080, but you can change this with the `--bind` flag.
+* `wconnect proxy-socks` works similar to the HTTP variant but starts a SOCKS5
+  proxy instead. This allows you to connect more things than just web browsers
+  and web servers.
