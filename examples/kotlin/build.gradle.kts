@@ -42,6 +42,16 @@ fun ExecSpec.cargoNdkEnv() {
 
 val connectClientDir = file("../..")
 
+val cleanRust by tasks.registering(Delete::class) {
+    group = "build"
+    description = "Remove native libraries copied by cargo-ndk"
+    delete(jniLibsDir)
+}
+
+tasks.named("clean") {
+    dependsOn(cleanRust)
+}
+
 val buildRustRelease by tasks.registering(Exec::class) {
     group = "build"
     description = "Build libwispers_connect.so for Android via cargo-ndk"
