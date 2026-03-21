@@ -19,8 +19,8 @@ test:
 	$(DYLIB_VAR)=$(LIB_DIR) $(PYTEST) tests/ -v
 
 lint:
-	$(PYTHON) -m mypy wispers_connect/
-	$(PYTHON) -m ruff check wispers_connect/ tests/
+	mypy wispers_connect/
+	ruff check wispers_connect/ tests/
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
