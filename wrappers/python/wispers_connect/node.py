@@ -13,8 +13,7 @@ from ._bridge import (
     call_async,
 )
 from ._handle import Handle
-from .exceptions import raise_for_status
-from .types import GroupInfo, GroupState, NodeState
+from .types import GroupInfo, NodeState
 
 
 class Node(Handle):

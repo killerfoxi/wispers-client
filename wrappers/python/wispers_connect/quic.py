@@ -7,7 +7,6 @@ from typing import Any
 
 from ._bridge import BASIC_CB, DATA_CB, QUIC_STREAM_CB, call_async
 from ._handle import Handle
-from .exceptions import raise_for_status
 
 
 class QuicStream(Handle):

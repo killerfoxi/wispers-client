@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 from ctypes import (
     CFUNCTYPE,
     POINTER,

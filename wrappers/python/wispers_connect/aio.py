@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
-
 from . import node as _node_mod
 from . import quic as _quic_mod
 from . import serving as _serving_mod
