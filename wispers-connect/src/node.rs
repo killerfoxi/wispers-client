@@ -129,22 +129,13 @@ impl NodeStorage {
             .map_err(NodeStateError::hub)?;
 
         // Fetch unverified first - we need to check if we're in it before we can verify.
-        // If the hub says unauthenticated, our node was removed server-side (e.g. group
-        // reset). Wipe local state and start fresh.
-        let roster = match client.get_unverified_roster(registration).await {
-            Ok(r) => r,
-            Err(e) if e.is_unauthenticated() || e.is_not_found() => {
-                self.store.delete().map_err(NodeStateError::store)?;
-                let fresh = PersistedNodeState::new();
-                self.store.save(&fresh).map_err(NodeStateError::store)?;
-                return Ok(Node::new_pending(
-                    fresh,
-                    self.store.clone(),
-                    self.config.clone(),
-                ));
-            }
-            Err(e) => return Err(NodeStateError::hub(e)),
-        };
+        // If the hub says unauthenticated/not_found, the node was removed server-side.
+        // Surface this as an error so callers can decide how to handle it (e.g. prompt
+        // the user to logout).
+        let roster = client
+            .get_unverified_roster(registration)
+            .await
+            .map_err(NodeStateError::hub)?;
 
         // Check if our node is in the roster
         let is_activated = roster

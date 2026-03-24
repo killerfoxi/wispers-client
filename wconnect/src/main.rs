@@ -7,7 +7,7 @@ mod serving;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use wispers_connect::{FileNodeStateStore, NodeState, NodeStorage};
+use wispers_connect::{FileNodeStateStore, Node, NodeState, NodeStorage};
 
 #[derive(Parser)]
 #[command(name = "wconnect")]
@@ -219,6 +219,20 @@ fn read_registration_sync(profile: &str) -> Result<(String, i32)> {
     Ok((reg.connectivity_group_id.to_string(), reg.node_number))
 }
 
+/// Load node state, replacing unauthenticated hub errors with a helpful message.
+async fn load_node(storage: &NodeStorage) -> Result<Node> {
+    match storage.restore_or_init_node().await {
+        Ok(node) => Ok(node),
+        Err(e) if e.is_unauthenticated() || e.is_not_found() => {
+            anyhow::bail!(
+                "Authentication with the hub failed. If your node was removed \
+                 remotely, run `wconnect logout` to clear local state."
+            );
+        }
+        Err(e) => Err(e).context("failed to load node state"),
+    }
+}
+
 fn get_storage(hub_override: Option<&str>, profile: &str) -> Result<NodeStorage> {
     let config_dir = dirs::config_dir().context("could not determine config directory")?;
     let store_dir = config_dir.join("wconnect").join(profile);
@@ -267,10 +281,7 @@ async fn async_main(
 async fn register(hub_override: Option<&str>, profile: &str, token: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
 
-    let mut node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let mut node = load_node(&storage).await?;
 
     match node.state() {
         NodeState::Pending => {}
@@ -297,10 +308,7 @@ async fn register(hub_override: Option<&str>, profile: &str, token: &str) -> Res
 
 async fn activate(hub_override: Option<&str>, profile: &str, activation_code: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
-    let mut node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let mut node = load_node(&storage).await?;
 
     match node.state() {
         NodeState::Pending => {
@@ -341,10 +349,7 @@ async fn activate(hub_override: Option<&str>, profile: &str, activation_code: &s
 
 async fn get_activation_code(hub_override: Option<&str>, profile: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let node = load_node(&storage).await?;
 
     if node.state() == NodeState::Pending {
         anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
@@ -381,6 +386,9 @@ async fn get_activation_code(hub_override: Option<&str>, profile: &str) -> Resul
 
 async fn logout(hub_override: Option<&str>, profile: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
+    // Don't use load_node() here — if the hub rejected us, we still want to
+    // be able to clear local state (which is exactly what the error message
+    // tells the user to do).
     let node = storage
         .restore_or_init_node()
         .await
@@ -395,10 +403,7 @@ async fn logout(hub_override: Option<&str>, profile: &str) -> Result<()> {
 
 async fn nodes(hub_override: Option<&str>, profile: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let node = load_node(&storage).await?;
 
     if node.state() == NodeState::Pending {
         anyhow::bail!("Not registered. Use 'wconnect register <token>' first.");
@@ -475,10 +480,7 @@ fn format_last_seen(millis: i64) -> String {
 
 async fn status(hub_override: Option<&str>, profile: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let node = load_node(&storage).await?;
 
     match node.state() {
         NodeState::Pending => {
