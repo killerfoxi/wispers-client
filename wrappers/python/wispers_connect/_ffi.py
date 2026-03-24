@@ -89,6 +89,9 @@ def declare_functions(lib: ctypes.CDLL) -> None:  # noqa: C901
     lib.wispers_storage_override_hub_addr.argtypes = [c_void_p, c_char_p]
     lib.wispers_storage_override_hub_addr.restype = c_int
 
+    lib.wispers_storage_delete_state.argtypes = [c_void_p]
+    lib.wispers_storage_delete_state.restype = c_int
+
     lib.wispers_storage_restore_or_init_async.argtypes = [c_void_p, c_void_p, WispersInitCallbackType]
     lib.wispers_storage_restore_or_init_async.restype = c_int
 

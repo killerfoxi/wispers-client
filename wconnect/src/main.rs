@@ -386,15 +386,16 @@ async fn get_activation_code(hub_override: Option<&str>, profile: &str) -> Resul
 
 async fn logout(hub_override: Option<&str>, profile: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
-    // Don't use load_node() here — if the hub rejected us, we still want to
-    // be able to clear local state (which is exactly what the error message
-    // tells the user to do).
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
-
-    node.logout().await.context("failed to logout")?;
+    match storage.restore_or_init_node().await {
+        Ok(node) => {
+            node.logout().await.context("failed to logout")?;
+        }
+        Err(e) if e.is_unauthenticated() || e.is_not_found() => {
+            // Node was removed remotely — just delete local state.
+            storage.delete_state().context("failed to delete local state")?;
+        }
+        Err(e) => return Err(e).context("failed to load node state"),
+    }
     println!("Logged out.");
     Ok(())
 }

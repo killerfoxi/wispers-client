@@ -77,6 +77,12 @@ impl NodeStorage {
         self.config.write().unwrap().hub_addr = addr.into();
     }
 
+    /// Delete all persisted state. Used for logout when the node can't be
+    /// restored (e.g. hub rejected our credentials).
+    pub fn delete_state(&self) -> Result<(), NodeStateError> {
+        self.store.delete().map_err(NodeStateError::store)
+    }
+
     /// Read just the registration from local storage (sync, no hub contact).
     ///
     /// Returns `None` if not registered. This is useful when you need

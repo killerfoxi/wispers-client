@@ -238,6 +238,9 @@ WispersStatus wispers_storage_override_hub_addr(
     const char *hub_addr
 );
 
+// Delete all persisted state. Used for logout when the node can't be restored.
+WispersStatus wispers_storage_delete_state(WispersNodeStorageHandle *handle);
+
 // Restore or initialize node state asynchronously.
 // On success, callback receives a single node handle and its current state.
 // The storage handle remains valid and is NOT consumed.

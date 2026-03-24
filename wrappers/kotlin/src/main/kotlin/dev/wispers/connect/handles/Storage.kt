@@ -57,6 +57,20 @@ class Storage internal constructor(
     }
 
     /**
+     * Delete all persisted state. Used for logout when the node can't be
+     * restored (e.g. hub rejected credentials).
+     *
+     * @throws WispersException on storage errors
+     */
+    fun deleteState() {
+        val ptr = requireOpen()
+        val status = lib.wispers_storage_delete_state(ptr)
+        if (status != WispersStatus.SUCCESS.code) {
+            throw WispersException.fromStatus(status)
+        }
+    }
+
+    /**
      * Override the hub address for testing purposes.
      *
      * @param hubAddr The hub address to use (e.g., "localhost:8080")

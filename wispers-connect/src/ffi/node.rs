@@ -101,6 +101,22 @@ pub extern "C" fn wispers_storage_override_hub_addr(
     WispersStatus::Success
 }
 
+/// Delete all persisted state. Used for logout when the node can't be restored.
+#[unsafe(no_mangle)]
+pub extern "C" fn wispers_storage_delete_state(
+    handle: *mut WispersNodeStorageHandle,
+) -> WispersStatus {
+    if handle.is_null() {
+        return WispersStatus::NullPointer;
+    }
+
+    let wrapper = unsafe { &*handle };
+    match wrapper.0.delete_state() {
+        Ok(()) => WispersStatus::Success,
+        Err(e) => WispersStatus::from(e),
+    }
+}
+
 /// Restore or initialize node state asynchronously.
 ///
 /// On success, the callback receives a single node handle and the current state.
