@@ -25,7 +25,7 @@ a peer-to-peer connection.
 
 ### 0. Prerequisites
 
-- A local clone of the `wispers-connect` repository (this one)
+- A local clone of the `wispers-client` repository (this one)
 - Initialise submodules: `git submodule update --init --recursive`
 - The build prerequisites listed under [Building](#building) below
 
