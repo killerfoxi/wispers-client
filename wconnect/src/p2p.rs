@@ -13,10 +13,7 @@ pub async fn ping(
     use_quic: bool,
 ) -> Result<()> {
     let storage = super::get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let node = super::load_node(&storage).await?;
 
     match node.state() {
         NodeState::Pending => {
@@ -135,10 +132,7 @@ pub async fn forward(
     }
 
     let storage = super::get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let node = super::load_node(&storage).await?;
 
     match node.state() {
         NodeState::Pending => {

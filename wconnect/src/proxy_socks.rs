@@ -41,10 +41,7 @@ pub async fn run(
     egress_node: Option<i32>,
 ) -> Result<()> {
     let storage = super::get_storage(hub_override, profile)?;
-    let node = storage
-        .restore_or_init_node()
-        .await
-        .context("failed to load node state")?;
+    let node = super::load_node(&storage).await?;
 
     if node.state() != NodeState::Activated {
         anyhow::bail!(
