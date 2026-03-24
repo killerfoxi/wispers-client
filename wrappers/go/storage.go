@@ -83,6 +83,16 @@ func (s *NodeStorage) OverrideHubAddr(addr string) error {
 	return errorFromStatus(int(status))
 }
 
+// DeleteState deletes all persisted state. Used for logout when the node can't
+// be restored (e.g. hub rejected credentials).
+func (s *NodeStorage) DeleteState() error {
+	ptr := s.requireOpen()
+	status := C.wispers_storage_delete_state(
+		(*C.WispersNodeStorageHandle)(ptr),
+	)
+	return errorFromStatus(int(status))
+}
+
 // RestoreOrInit restores or initializes the node state. Returns a Node and its
 // current state. The NodeStorage remains valid after this call.
 func (s *NodeStorage) RestoreOrInit() (*Node, NodeState, error) {

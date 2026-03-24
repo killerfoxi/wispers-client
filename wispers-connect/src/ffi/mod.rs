@@ -26,9 +26,9 @@ pub use types::{
 pub use node::{
     wispers_node_activate_async, wispers_node_free, wispers_node_group_info_async,
     wispers_node_logout_async, wispers_node_register_async, wispers_node_state,
-    wispers_storage_free, wispers_storage_new_in_memory, wispers_storage_new_with_callbacks,
-    wispers_storage_override_hub_addr, wispers_storage_read_registration,
-    wispers_storage_restore_or_init_async,
+    wispers_storage_delete_state, wispers_storage_free, wispers_storage_new_in_memory,
+    wispers_storage_new_with_callbacks, wispers_storage_override_hub_addr,
+    wispers_storage_read_registration, wispers_storage_restore_or_init_async,
 };
 
 // Re-export serving functions

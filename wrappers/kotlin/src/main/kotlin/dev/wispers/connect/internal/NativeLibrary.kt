@@ -61,6 +61,11 @@ interface NativeLibrary : Library {
     ): Int
 
     /**
+     * Delete all persisted state.
+     */
+    fun wispers_storage_delete_state(handle: Pointer?): Int
+
+    /**
      * Restore or initialize node state asynchronously.
      */
     fun wispers_storage_restore_or_init_async(

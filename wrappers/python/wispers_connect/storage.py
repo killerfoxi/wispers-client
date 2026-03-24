@@ -214,6 +214,13 @@ class NodeStorage(Handle):
         status = get_lib().wispers_storage_override_hub_addr(ptr, addr.encode("utf-8"))
         raise_for_status(status)
 
+    def delete_state(self) -> None:
+        """Delete all persisted state. Used for logout when the node can't be restored."""
+        from ._library import get_lib
+        ptr = self._require_open()
+        status = get_lib().wispers_storage_delete_state(ptr)
+        raise_for_status(status)
+
     def restore_or_init(self) -> tuple[Any, NodeState]:
         """Restore or initialize node state. Returns (Node, NodeState).
 
