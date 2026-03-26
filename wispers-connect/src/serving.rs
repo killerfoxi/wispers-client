@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::crypto::{PairingCode, PairingSecret, SigningKeyPair, generate_nonce};
 use crate::hub::ServingConnection;
@@ -77,7 +78,16 @@ pub struct EndorsingStatus {
 /// Maximum number of concurrent activation sessions (codes + pending cosigns).
 const MAX_ACTIVE_ACTIVATIONS: usize = 100;
 
+/// How long an activation code remains valid after generation.
+const SECRET_TTL: Duration = Duration::from_secs(120);
+
 //-- Endorsing state (testable without hub connection) -------------------------------------------------
+
+/// A pairing secret with an expiry time.
+struct TimedSecret {
+    secret: PairingSecret,
+    expires_at: Instant,
+}
 
 /// Internal state for a pending endorsement (keyed by new node number in the HashMap).
 struct PendingEndorsement {
@@ -88,20 +98,33 @@ struct PendingEndorsement {
 
 /// Manages endorsement state: outstanding activation codes and pending cosigns.
 struct EndorsingState {
-    pairing_secrets: Vec<PairingSecret>,
+    secret_ttl: Duration,
+    pairing_secrets: Vec<TimedSecret>,
     pending_endorsements: HashMap<i32, PendingEndorsement>,
 }
 
 impl EndorsingState {
     fn new() -> Self {
         Self {
+            secret_ttl: SECRET_TTL,
             pairing_secrets: Vec::new(),
             pending_endorsements: HashMap::new(),
         }
     }
 
+    /// Remove expired secrets.
+    fn prune_expired(&mut self) {
+        let now = Instant::now();
+        self.pairing_secrets.retain(|ts| ts.expires_at > now);
+    }
+
     fn status(&self) -> Option<EndorsingStatus> {
-        let codes_outstanding = self.pairing_secrets.len();
+        let now = Instant::now();
+        let codes_outstanding = self
+            .pairing_secrets
+            .iter()
+            .filter(|ts| ts.expires_at > now)
+            .count();
         let nodes_awaiting_cosign: Vec<i32> = self.pending_endorsements.keys().copied().collect();
         if codes_outstanding == 0 && nodes_awaiting_cosign.is_empty() {
             None
@@ -117,6 +140,7 @@ impl EndorsingState {
         &mut self,
         node_number: i32,
     ) -> Result<PairingCode, ServingError> {
+        self.prune_expired();
         if self.pairing_secrets.len() + self.pending_endorsements.len()
             >= MAX_ACTIVE_ACTIVATIONS
         {
@@ -125,7 +149,10 @@ impl EndorsingState {
 
         let secret = PairingSecret::generate();
         let code = PairingCode::new(node_number, secret.clone());
-        self.pairing_secrets.push(secret);
+        self.pairing_secrets.push(TimedSecret {
+            secret,
+            expires_at: Instant::now() + self.secret_ttl,
+        });
 
         log::info!("Generated pairing code: {}", code.format());
         Ok(code)
@@ -149,12 +176,13 @@ impl EndorsingState {
             payload.receiver_node_number
         );
 
-        // Find the pairing secret that verifies this MAC
+        // Prune expired secrets, then find the one that verifies this MAC
+        self.prune_expired();
         let payload_bytes = payload.encode_to_vec();
         let secret_index = self
             .pairing_secrets
             .iter()
-            .position(|s| s.verify_mac(&payload_bytes, &msg.mac));
+            .position(|ts| ts.secret.verify_mac(&payload_bytes, &msg.mac));
 
         let Some(secret_index) = secret_index else {
             if self.pairing_secrets.is_empty() {
@@ -168,7 +196,7 @@ impl EndorsingState {
             }
         };
 
-        let secret = self.pairing_secrets.swap_remove(secret_index);
+        let secret = self.pairing_secrets.swap_remove(secret_index).secret;
         log::debug!(
             "  MAC verified successfully (secret {} of {})",
             secret_index + 1,
@@ -858,6 +886,13 @@ mod tests {
         (EndorsingState::new(), signing_key)
     }
 
+    fn make_state_with_ttl(ttl: Duration) -> (EndorsingState, SigningKeyPair) {
+        let signing_key = SigningKeyPair::derive_from_root_key(&[42u8; 32]);
+        let mut state = EndorsingState::new();
+        state.secret_ttl = ttl;
+        (state, signing_key)
+    }
+
     /// Build a PairNodesMessage that a new node would send, using the given
     /// activation code's secret for MAC computation.
     fn build_pair_message(code: &PairingCode, new_node_number: i32) -> proto::PairNodesMessage {
@@ -1041,5 +1076,36 @@ mod tests {
         // Verify MAC on reply
         let reply_payload_bytes = reply_payload.encode_to_vec();
         assert!(code.secret.verify_mac(&reply_payload_bytes, &reply.mac));
+    }
+
+    #[test]
+    fn expired_code_rejected() {
+        let (mut state, key) = make_state_with_ttl(Duration::ZERO);
+        let code = state.generate_activation_code(NODE_NUMBER).unwrap();
+
+        // Code expired immediately — pairing should fail
+        let msg = build_pair_message(&code, 10);
+        let err = state.pair_nodes(&msg, NODE_NUMBER, &key).unwrap_err();
+        assert!(err.contains("no active pairing session"));
+        assert_eq!(state.pairing_secrets.len(), 0); // pruned
+    }
+
+    #[test]
+    fn expired_codes_dont_count_toward_cap() {
+        let (mut state, _) = make_state_with_ttl(Duration::ZERO);
+        // Generate MAX codes — they all expire immediately
+        for _ in 0..MAX_ACTIVE_ACTIVATIONS {
+            state.generate_activation_code(NODE_NUMBER).unwrap();
+        }
+        // Should succeed because generate_activation_code prunes expired first
+        state.generate_activation_code(NODE_NUMBER).unwrap();
+    }
+
+    #[test]
+    fn expired_codes_not_counted_in_status() {
+        let (mut state, _) = make_state_with_ttl(Duration::ZERO);
+        state.generate_activation_code(NODE_NUMBER).unwrap();
+        // Code expired immediately — status should show nothing
+        assert!(state.status().is_none());
     }
 }
