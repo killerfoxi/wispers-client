@@ -175,7 +175,7 @@ peer-to-peer connection!
 
 ### Rust library & CLI tools
 
-Prerequisites: a [Rust toolchain](https://rust-lang.org/tools/install/) and CMake (for the bundled libjuice ICE library). Protobuf compilation is handled automatically by `tonic-build` during `cargo build`.
+Prerequisites: a [Rust toolchain](https://rust-lang.org/tools/install/), `CMake` (for the bundled libjuice ICE library) and `clang-devel`. Protobuf compilation should be handled automatically by `tonic-build` during `cargo build`, but you may need to install `protobuf-compiler`.
 
 ```bash
 cargo build          # library + wconnect + wcadm
