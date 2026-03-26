@@ -9,8 +9,8 @@ use std::ffi::{CStr, CString};
 use std::fmt;
 use std::os::raw::{c_char, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 mod ffi {
     #![allow(non_camel_case_types)]

@@ -10,18 +10,18 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
 // Use the proto types from the library
 use wispers_connect::hub::proto::{
+    DeregisterNodeRequest, DeregisterNodeResponse, ListNodesRequest, NodeList, NodeRegistration,
+    NodeRegistrationRequest, PairNodesMessage, RosterRequest, ServingRequest, ServingResponse,
+    StartConnectionRequest, StartConnectionResponse, StunTurnConfig, StunTurnConfigRequest,
+    UpdateRosterRequest, UpdateRosterResponse, Welcome,
     hub_server::{Hub, HubServer},
-    roster, serving_request, serving_response, DeregisterNodeRequest, DeregisterNodeResponse,
-    ListNodesRequest, NodeList, NodeRegistration, NodeRegistrationRequest, PairNodesMessage,
-    RosterRequest, ServingRequest, ServingResponse, StartConnectionRequest,
-    StartConnectionResponse, StunTurnConfig, StunTurnConfigRequest, UpdateRosterRequest,
-    UpdateRosterResponse, Welcome,
+    roster, serving_request, serving_response,
 };
 
 /// A pending connection request waiting for the answerer's response.

@@ -95,10 +95,7 @@ pub async fn serve(
             AllowedPorts::Whitelist(set) => {
                 let mut ports: Vec<_> = set.iter().collect();
                 ports.sort();
-                println!(
-                    "  Port forwarding: allowed ports {:?}",
-                    ports
-                );
+                println!("  Port forwarding: allowed ports {:?}", ports);
             }
         }
     } else {
@@ -282,7 +279,13 @@ async fn handle_quic_connection(
                 let stream_id = stream.id();
                 println!("  Accepted stream {} from node {}", stream_id, peer);
                 let allowed_ports = Arc::clone(&allowed_ports);
-                tokio::spawn(handle_quic_stream(stream, peer, stream_id, allowed_ports, allow_egress));
+                tokio::spawn(handle_quic_stream(
+                    stream,
+                    peer,
+                    stream_id,
+                    allowed_ports,
+                    allow_egress,
+                ));
             }
             Err(e) => {
                 println!("  QUIC connection to node {} closed: {}", peer, e);

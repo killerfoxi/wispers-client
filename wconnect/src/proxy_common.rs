@@ -56,7 +56,6 @@ impl ProxyError {
             ProxyError::GatewayTimeout(_) => 504,
         }
     }
-
 }
 
 /// A pooled QUIC connection with last-used timestamp.
@@ -263,7 +262,9 @@ mod tests {
         assert_eq!(ProxyError::BadRequest("".to_string()).status_code(), 400);
         assert_eq!(ProxyError::Forbidden("".to_string()).status_code(), 403);
         assert_eq!(ProxyError::BadGateway("".to_string()).status_code(), 502);
-        assert_eq!(ProxyError::GatewayTimeout("".to_string()).status_code(), 504);
+        assert_eq!(
+            ProxyError::GatewayTimeout("".to_string()).status_code(),
+            504
+        );
     }
-
 }
