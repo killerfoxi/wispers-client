@@ -83,7 +83,14 @@ fn build_libjuice_native(libjuice_dir: &Path) -> BuildResult<()> {
     let dst = config.build();
 
     let lib_dir = dst.join("lib");
-    let link_dir = if lib_dir.exists() { lib_dir } else { dst };
+    let lib64_dir = dst.join("lib64");
+    let link_dir = if lib_dir.exists() {
+        lib_dir
+    } else if lib64_dir.exists() {
+        lib64_dir
+    } else {
+        dst
+    };
     println!("cargo:rustc-link-search=native={}", link_dir.display());
     println!("cargo:rustc-link-lib=static=juice");
 
