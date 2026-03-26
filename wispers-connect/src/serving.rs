@@ -136,14 +136,9 @@ impl EndorsingState {
         }
     }
 
-    fn generate_activation_code(
-        &mut self,
-        node_number: i32,
-    ) -> Result<PairingCode, ServingError> {
+    fn generate_activation_code(&mut self, node_number: i32) -> Result<PairingCode, ServingError> {
         self.prune_expired();
-        if self.pairing_secrets.len() + self.pending_endorsements.len()
-            >= MAX_ACTIVE_ACTIVATIONS
-        {
+        if self.pairing_secrets.len() + self.pending_endorsements.len() >= MAX_ACTIVE_ACTIVATIONS {
             return Err(ServingError::TooManyActivationSessions);
         }
 
@@ -246,12 +241,7 @@ impl EndorsingState {
         let pending = self
             .pending_endorsements
             .get(&new_node_number)
-            .ok_or_else(|| {
-                format!(
-                    "no pending endorsement for node {}",
-                    new_node_number
-                )
-            })?;
+            .ok_or_else(|| format!("no pending endorsement for node {}", new_node_number))?;
         let expected_pubkey = pending.new_node_pubkey.clone();
         let expected_new_nonce = pending.new_node_nonce.clone();
         let expected_our_nonce = pending.our_nonce.clone();
@@ -555,11 +545,10 @@ impl ServingSession {
                 log::debug!("  Welcome received");
             }
             Some(proto::serving_request::Kind::PairNodesMessage(msg)) => {
-                match self.endorsing.pair_nodes(
-                    &msg,
-                    self.node_number,
-                    &self.signing_key,
-                ) {
+                match self
+                    .endorsing
+                    .pair_nodes(&msg, self.node_number, &self.signing_key)
+                {
                     Ok(reply) => {
                         let response = proto::ServingResponse {
                             request_id: request.request_id,
@@ -579,11 +568,10 @@ impl ServingSession {
                 }
             }
             Some(proto::serving_request::Kind::RosterCosignRequest(req)) => {
-                match self.endorsing.roster_cosign(
-                    &req,
-                    self.node_number,
-                    &self.signing_key,
-                ) {
+                match self
+                    .endorsing
+                    .roster_cosign(&req, self.node_number, &self.signing_key)
+                {
                     Ok(cosign_resp) => {
                         let response = proto::ServingResponse {
                             request_id: request.request_id,
@@ -633,16 +621,15 @@ impl ServingSession {
         );
 
         // Parse caller's X25519 public key
-        let caller_x25519_public: [u8; 32] =
-            match req.caller_x25519_public_key.clone().try_into() {
-                Ok(key) => key,
-                Err(_) => {
-                    log::warn!("  Invalid X25519 public key length");
-                    self.send_error_response(request_id, "invalid X25519 public key")
-                        .await;
-                    return;
-                }
-            };
+        let caller_x25519_public: [u8; 32] = match req.caller_x25519_public_key.clone().try_into() {
+            Ok(key) => key,
+            Err(_) => {
+                log::warn!("  Invalid X25519 public key length");
+                self.send_error_response(request_id, "invalid X25519 public key")
+                    .await;
+                return;
+            }
+        };
 
         // Fetch and verify fresh roster from hub
         let mut client = match HubClient::connect(&self.p2p_config.hub_addr).await {
@@ -1068,10 +1055,7 @@ mod tests {
         assert_eq!(reply_payload.receiver_node_number, 10); // new node
         assert!(!reply_payload.public_key_spki.is_empty());
         assert!(!reply_payload.nonce.is_empty());
-        assert_eq!(
-            reply_payload.reply_nonce,
-            msg.payload.unwrap().nonce
-        );
+        assert_eq!(reply_payload.reply_nonce, msg.payload.unwrap().nonce);
 
         // Verify MAC on reply
         let reply_payload_bytes = reply_payload.encode_to_vec();
