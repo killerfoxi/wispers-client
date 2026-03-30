@@ -59,3 +59,6 @@ local.properties
 # Compiled executables
 examples/c/ffi_demo
 wispers-connect/tests/c_ffi/ffi_test
+
+# Claude Code
+.claude/
