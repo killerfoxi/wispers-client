@@ -32,7 +32,8 @@ public enum GroupState: Int32, Sendable {
     }
 }
 
-public struct NodeInfo: Sendable {
+public struct NodeInfo: Sendable, Identifiable {
+    public var id: Int32 { nodeNumber }
     public let nodeNumber: Int32
     public let name: String
     public let metadata: String
