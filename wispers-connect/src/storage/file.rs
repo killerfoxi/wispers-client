@@ -88,15 +88,22 @@ impl NodeStateStore for FileNodeStateStore {
     }
 
     fn save(&self, state: &PersistedNodeState) -> Result<(), StorageError> {
-        fs::create_dir_all(&self.dir)?;
+        if !self.dir.exists() {
+            fs::create_dir_all(&self.dir)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o700))?;
+            }
+        }
 
         // Save root key
-        fs::write(self.root_key_path(), state.root_key_bytes())?;
+        write_private(&self.root_key_path(), state.root_key_bytes())?;
 
         // Save registration if present
         let registration_path = self.registration_path();
         if let Some(registration) = state.registration() {
-            fs::write(&registration_path, serialize_registration(registration))?;
+            write_private(&registration_path, &serialize_registration(registration))?;
         } else if registration_path.exists() {
             fs::remove_file(&registration_path)?;
         }
@@ -110,4 +117,15 @@ impl NodeStateStore for FileNodeStateStore {
         }
         Ok(())
     }
+}
+
+/// Write `data` to `path` with mode 0o600 (owner-only) on Unix.
+fn write_private(path: &PathBuf, data: &[u8]) -> std::io::Result<()> {
+    fs::write(path, data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
