@@ -440,13 +440,23 @@ fn verify_revocation(
     )?;
 
     // Verify both the revoker and the revoked node were active before this revocation.
-    if !node_was_active_before_revocation(roster, node_revoked, payload.revoker_node_number, payload.revoked_node_number) {
+    if !node_was_active_before_revocation(
+        roster,
+        node_revoked,
+        payload.revoker_node_number,
+        payload.revoked_node_number,
+    ) {
         return Err(RosterVerificationError::RevokerNotInPreviousRoster {
             version: expected_version,
             revoker: payload.revoker_node_number,
         });
     }
-    if !node_was_active_before_revocation(roster, node_revoked, payload.revoked_node_number, payload.revoked_node_number) {
+    if !node_was_active_before_revocation(
+        roster,
+        node_revoked,
+        payload.revoked_node_number,
+        payload.revoked_node_number,
+    ) {
         return Err(RosterVerificationError::RevokedNodeNotInRoster {
             version: expected_version,
             revoked: payload.revoked_node_number,
