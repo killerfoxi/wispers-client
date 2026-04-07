@@ -8,10 +8,13 @@ use super::runtime;
 use super::types::{CallbackContext, WispersCallback, WispersNodeHandle};
 use crate::errors::WispersStatus;
 use crate::node::{Node, NodeState};
+use crate::p2p::{P2pError, QuicConnection, UdpConnection};
 use crate::serving::{IncomingConnections, ServingHandle, ServingSession};
 use std::ffi::{CString, c_void};
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Opaque handle to a serving command interface.
 ///
@@ -28,7 +31,13 @@ pub struct WispersServingSession(pub(crate) Option<ServingSession>);
 /// Opaque handle to incoming P2P connection receivers.
 ///
 /// Only present for activated nodes (not registered nodes).
-pub struct WispersIncomingConnections(pub(crate) IncomingConnections);
+/// Each receiver is wrapped in its own Arc<Mutex<>> so spawned accept tasks
+/// hold a reference that outlives a `close()` call from the foreign wrapper,
+/// and UDP/QUIC accepts don't block each other.
+pub struct WispersIncomingConnections {
+    pub(crate) udp: Arc<Mutex<tokio::sync::mpsc::Receiver<Result<UdpConnection, P2pError>>>>,
+    pub(crate) quic: Arc<Mutex<tokio::sync::mpsc::Receiver<Result<QuicConnection, P2pError>>>>,
+}
 
 // Callback types for serving operations
 
@@ -86,27 +95,24 @@ pub extern "C" fn wispers_incoming_connections_free(handle: *mut WispersIncoming
     }
 }
 
-/// Helper to move an incoming-connections pointer into a spawned async task.
+/// Clone the UDP receiver Arc out of the opaque handle.
 ///
-/// Only `Send` is implemented — never `Sync`. Implementing `Sync` would allow the
-/// same pointer to be accessed from multiple threads simultaneously. Combined with
-/// the mutable reborrow in `get`, that would produce aliased `&mut T` references (UB).
-/// Each `SendableIncomingPtr` is always moved into exactly one `async move` closure.
-///
-/// Safety: The caller must ensure the pointer remains valid for the lifetime of
-/// the spawned task and is not accessed concurrently from other threads.
-struct SendableIncomingPtr(*mut WispersIncomingConnections);
-unsafe impl Send for SendableIncomingPtr {}
+/// # Safety
+/// The caller must ensure `handle` is a valid, non-null pointer.
+unsafe fn clone_udp_arc(
+    handle: *mut WispersIncomingConnections,
+) -> Arc<Mutex<tokio::sync::mpsc::Receiver<Result<UdpConnection, P2pError>>>> {
+    unsafe { (*handle).udp.clone() }
+}
 
-impl SendableIncomingPtr {
-    /// Return a mutable reference to the inner `IncomingConnections`.
-    ///
-    /// # Safety
-    /// The caller must ensure the pointer is valid and no other reference to
-    /// the same object exists at the same time.
-    unsafe fn get(&self) -> &mut IncomingConnections {
-        unsafe { &mut (*self.0).0 }
-    }
+/// Clone the QUIC receiver Arc out of the opaque handle.
+///
+/// # Safety
+/// The caller must ensure `handle` is a valid, non-null pointer.
+unsafe fn clone_quic_arc(
+    handle: *mut WispersIncomingConnections,
+) -> Arc<Mutex<tokio::sync::mpsc::Receiver<Result<QuicConnection, P2pError>>>> {
+    unsafe { (*handle).quic.clone() }
 }
 
 /// Accept an incoming UDP connection.
@@ -130,12 +136,10 @@ pub extern "C" fn wispers_incoming_accept_udp_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let ptr = SendableIncomingPtr(handle);
+    let rx = unsafe { clone_udp_arc(handle) };
 
     runtime::spawn(async move {
-        // Safety: caller must ensure handle is valid and not used concurrently
-        let incoming = unsafe { ptr.get() };
-        let result = incoming.udp.recv().await;
+        let result = rx.lock().await.recv().await;
 
         match result {
             Some(Ok(conn)) => {
@@ -193,12 +197,10 @@ pub extern "C" fn wispers_incoming_accept_quic_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let ptr = SendableIncomingPtr(handle);
+    let rx = unsafe { clone_quic_arc(handle) };
 
     runtime::spawn(async move {
-        // Safety: caller must ensure handle is valid and not used concurrently
-        let incoming = unsafe { ptr.get() };
-        let result = incoming.quic.recv().await;
+        let result = rx.lock().await.recv().await;
 
         match result {
             Some(Ok(conn)) => {
@@ -276,7 +278,10 @@ pub extern "C" fn wispers_node_start_serving_async(
             Ok((serving_handle, session, incoming)) => {
                 let h = Box::into_raw(Box::new(WispersServingHandle(serving_handle)));
                 let s = Box::into_raw(Box::new(WispersServingSession(Some(session))));
-                let i = Box::into_raw(Box::new(WispersIncomingConnections(incoming)));
+                let i = Box::into_raw(Box::new(WispersIncomingConnections {
+                    udp: Arc::new(Mutex::new(incoming.udp)),
+                    quic: Arc::new(Mutex::new(incoming.quic)),
+                }));
                 unsafe {
                     callback(ctx.ptr(), WispersStatus::Success, ptr::null(), h, s, i);
                 }
