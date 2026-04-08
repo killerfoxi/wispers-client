@@ -28,8 +28,8 @@ The sequence generally looks something like this:
 
 <center>
   <img src="images/wispers-registration-collab.svg"
-       width="420"
-       alt="Collaboration diagram of the registration process"/>
+	   width="420"
+	   alt="Collaboration diagram of the registration process"/>
 </center>
 
 1. In a first phase, we add all the necessary metadata about the node — name,
@@ -61,8 +61,8 @@ respective public keys while being certain that the hub didn't tamper with them.
 
 <center>
   <img src="images/wispers-activation-phase1.svg"
-       width="860"
-       alt="Collaboration diagram of the activation process, phase 1"/>
+	   width="860"
+	   alt="Collaboration diagram of the activation process, phase 1"/>
 </center>
 
 Each node computes an [HMAC](https://en.wikipedia.org/wiki/HMAC) from its public
@@ -91,8 +91,8 @@ co-sign it, and store it in the Hub.
 
 <center>
   <img src="images/wispers-activation-phase2.svg"
-       width="340"
-       alt="Collaboration diagram of the activation process, phase 2"/>
+	   width="340"
+	   alt="Collaboration diagram of the activation process, phase 2"/>
 </center>
 
 Nodes can verify this roster by following the history of its creation. Once a
@@ -125,8 +125,8 @@ through a NAT-traversal, relaying messages through the hub.
 
 <center>
   <img src="images/wispers-connection-establishment.svg"
-       width="860"
-       alt="Collaboration diagram of connection establishment"/>
+	   width="860"
+	   alt="Collaboration diagram of connection establishment"/>
 </center>
 
 There are roughly 3 steps:
@@ -156,6 +156,39 @@ certificates. Luckily, QUIC also supports pre-shared key (PSK) mode, and we have
 just established a shared key! So in QUIC mode, Wispers does not encrypt the UDP
 datagrams, but instead hands the key to QUIC to use it instead.
 
+### Node removal
+
+To remove a node, we have to roll back the actions we took to add it — we undo
+activation by revoking its roster entry, undo the hub registration by
+deregistering it from the hub, and finally clear up its local state including
+its signing key.
+
+Having multiple levels of registration, although needed to achieve the security
+properties we want, makes it easy to get a connectivity group into a state
+that's hard to interpret. For example, what would it mean to have a node
+deregistered but not deactivated? To make this more manageable, Wispers limits
+who can do which operations as follows.
+
+**Only activated nodes can remove nodes**. Removing a node requires revoking it
+from the roster, which only a a node can do because it involves signing a new
+version of the roster. **Self-revocation is intended and the default way to
+remove a node** (the library has a `node::logout` method for this). Note that
+node removal still involves deregistering the entry from the hub, but the hub is
+never proactive in this.
+
+A node removing another node is primarily useful if that node can't remove
+itself, because the device was lost or was reset and the node's credentials are
+gone. However, this can create the situation where a node thinks it's still
+registered/activated but gets "unauthenticated" errors. In that case, the node
+needs to reset itself and re-register (the library has the
+`storage::delete_state` method for this).
+
+Finally, if things go very wrong an _none_ of the nodes in a connectivity group
+can still authenticate, the Wispers Connect backend has the ability to clear the
+entire connectivity group, retaining its ID and name, but starting over with a
+clean roster. This is of limited utility but at least lets you keep the
+connectivity group ID.
+
 ## What Wispers Connect adds
 
 Wispers Connect is how you use Wispers in your own software. There are several
@@ -176,17 +209,17 @@ Wispers Connect.
 
 <center>
   <img src="images/wispers-connect-components.svg"
-       width="512" alt="Wispers Connect components diagram"/>
+	   width="512" alt="Wispers Connect components diagram"/>
 </center>
 
 The two main things an integrator needs to build are:
 * An app linking the wispers-connect library. The library does all the
   communication magic for you, but requires two things:
-    * A UI that allows the user to enter registration token and activation code
-      (not necessarily a _graphical_ UI)
-    * A storage implementation that stores the node's state (root key and hub
-      registration), ideally in the host platform's secure storage (e.g. the
-      Keychain on macOS)
+	* A UI that allows the user to enter registration token and activation code
+	  (not necessarily a _graphical_ UI)
+	* A storage implementation that stores the node's state (root key and hub
+	  registration), ideally in the host platform's secure storage (e.g. the
+	  Keychain on macOS)
 * An integrator service that manages creating registration tokens using the REST
   API. This will often be your own web app, but could also just be a CLI tool.
 
