@@ -170,7 +170,8 @@ peer-to-peer connection!
   examples for each wrapper
 - **[Internals](docs/INTERNALS.md)** — Code map, module responsibilities,
   and key types
-
+- **[Frequently Asked Questions](docs/FAQ.md)** — Comparisons to other
+  solutions, licensing questions, etc.
 ## Building
 
 ### Rust library & CLI tools
