@@ -261,13 +261,19 @@ pub extern "C" fn wispers_node_start_serving_async(
         None => return WispersStatus::MissingCallback,
     };
 
-    let wrapper = unsafe { &*handle };
+    let inner = unsafe { &*handle }.clone_inner();
     let ctx = CallbackContext(ctx);
 
-    // Extract what we need before spawning
-    let serving_params = extract_serving_params(&wrapper.0);
-
-    let params = match serving_params {
+    // Extract what we need before spawning. We hold the inner mutex
+    // briefly (sync, on the calling thread) and release it before the
+    // long-running async work — `start_serving_impl` doesn't touch the
+    // Node at all, so there's no need to keep the lock through the
+    // network round trips.
+    let params = {
+        let node = inner.blocking_lock();
+        extract_serving_params(&node)
+    };
+    let params = match params {
         Ok(p) => p,
         Err(status) => return status,
     };

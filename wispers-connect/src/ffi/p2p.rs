@@ -33,14 +33,6 @@ impl SendableUdpConnPtr {
     }
 }
 
-struct SendableNodePtr(*mut WispersNodeHandle);
-unsafe impl Send for SendableNodePtr {}
-
-impl SendableNodePtr {
-    unsafe fn get(&self) -> &WispersNodeHandle {
-        unsafe { &*self.0 }
-    }
-}
 
 /// Opaque handle to a UDP P2P connection.
 pub struct WispersUdpConnectionHandle(pub(crate) UdpConnection);
@@ -100,11 +92,11 @@ pub extern "C" fn wispers_node_connect_udp_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let node_ptr = SendableNodePtr(handle);
+    let inner = unsafe { &*handle }.clone_inner();
 
     runtime::spawn(async move {
-        let wrapper = unsafe { node_ptr.get() };
-        let result = wrapper.0.connect_udp(peer_node_number).await;
+        let node = inner.lock().await;
+        let result = node.connect_udp(peer_node_number).await;
 
         match result {
             Ok(conn) => {
@@ -318,11 +310,11 @@ pub extern "C" fn wispers_node_connect_quic_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let node_ptr = SendableNodePtr(handle);
+    let inner = unsafe { &*handle }.clone_inner();
 
     runtime::spawn(async move {
-        let wrapper = unsafe { node_ptr.get() };
-        let result = wrapper.0.connect_quic(peer_node_number).await;
+        let node = inner.lock().await;
+        let result = node.connect_quic(peer_node_number).await;
 
         match result {
             Ok(conn) => {

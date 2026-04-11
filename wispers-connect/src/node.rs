@@ -940,7 +940,14 @@ impl Node {
     /// - Pending: just deletes local state
     /// - Registered: deregisters from hub, then deletes local state
     /// - Activated: self-revokes from roster, deregisters from hub, deletes local state
-    pub async fn logout(self) -> Result<(), NodeStateError> {
+    ///
+    /// Takes `&mut self` rather than `self` so it can be called via a
+    /// `MutexGuard` from the FFI layer (which holds the inner `Node`
+    /// behind a mutex for soundness under concurrent FFI calls). The
+    /// caller is expected to drop or invalidate the `Node` afterwards
+    /// — every operation on a logged-out `Node` will hit
+    /// `NodeStateError::NotRegistered` or similar.
+    pub async fn logout(&mut self) -> Result<(), NodeStateError> {
         use crate::hub::HubClient;
 
         match self.state() {

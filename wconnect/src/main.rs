@@ -486,7 +486,7 @@ async fn get_activation_code(hub_override: Option<&str>, profile: &str) -> Resul
 async fn logout(hub_override: Option<&str>, profile: &str) -> Result<()> {
     let storage = get_storage(hub_override, profile)?;
     match storage.restore_or_init_node().await {
-        Ok(node) => {
+        Ok(mut node) => {
             node.logout().await.context("failed to logout")?;
         }
         Err(e) if e.is_unauthenticated() || e.is_not_found() => {

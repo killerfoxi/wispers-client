@@ -11,6 +11,8 @@ use crate::types::{GroupInfo, GroupState, NodeInfo, NodeRegistration};
 use std::ffi::{CStr, CString, c_void};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // =============================================================================
 // Handle wrappers
@@ -20,7 +22,32 @@ use std::ptr;
 pub struct WispersNodeStorageHandle(pub(crate) NodeStorage);
 
 /// Opaque handle to a Node instance.
-pub struct WispersNodeHandle(pub(crate) Node);
+///
+/// The inner `Node` is wrapped in `Arc<tokio::sync::Mutex<…>>` so that the
+/// FFI surface is sound under concurrent calls from C-side callers. The C
+/// caller can hand the same pointer to multiple FFI methods on different
+/// threads without violating Rust's aliasing rules: every method acquires
+/// the mutex before touching the inner `Node`, so there is at most one
+/// borrow at any moment.
+///
+/// Use the helper methods on `WispersNodeHandle` to get a guard or clone
+/// the inner `Arc` instead of dereferencing `pub(crate)` field directly.
+pub struct WispersNodeHandle(pub(crate) Arc<Mutex<Node>>);
+
+impl WispersNodeHandle {
+    /// Wrap a freshly-created `Node` in a handle suitable for boxing into
+    /// a raw pointer for FFI return values.
+    pub(crate) fn new(node: Node) -> Self {
+        Self(Arc::new(Mutex::new(node)))
+    }
+
+    /// Clone the inner `Arc` so the clone can be moved into a spawned
+    /// async task. The original handle (and its `Arc` reference) stays
+    /// owned by the C caller.
+    pub(crate) fn clone_inner(&self) -> Arc<Mutex<Node>> {
+        Arc::clone(&self.0)
+    }
+}
 
 // =============================================================================
 // Callback context
