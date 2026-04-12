@@ -744,8 +744,7 @@ impl Node {
         use crate::hub::HubClient;
         use crate::ice::IceCaller;
         use crate::p2p::{P2pError, UdpConnection};
-        use ed25519_dalek::pkcs8::DecodePublicKey;
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use crate::p2p_signing;
 
         // Check state - map to P2pError for this method's signature
         if self.state() != NodeState::Activated {
@@ -768,21 +767,15 @@ impl Node {
         // Generate ephemeral X25519 keypair for forward secrecy
         let encryption_key = X25519KeyPair::generate_ephemeral();
 
-        // Build the StartConnectionRequest
-        let mut message_to_sign = Vec::new();
-        message_to_sign.extend_from_slice(&peer_node_number.to_le_bytes());
-        message_to_sign.extend_from_slice(&encryption_key.public_key());
-        message_to_sign.extend_from_slice(caller_sdp.as_bytes());
-        let signature = self.signing_key.sign(&message_to_sign);
-
-        let request = proto::StartConnectionRequest {
+        // Build and sign the inner payload, then wrap in the envelope.
+        let payload = proto::start_connection_request::Payload {
             answerer_node_number: peer_node_number,
             caller_x25519_public_key: encryption_key.public_key().to_vec(),
             caller_sdp,
-            signature,
-            stun_turn_config: Some(stun_turn_config),
             transport: proto::Transport::Datagram.into(),
+            stun_turn_config: Some(stun_turn_config),
         };
+        let request = p2p_signing::build_signed_request(&self.signing_key, &payload);
 
         // Send to hub
         let response = client.start_connection(registration, request).await?;
@@ -792,27 +785,11 @@ impl Node {
             .find_peer_in_roster(&mut client, peer_node_number)
             .await?;
 
-        let verifying_key = VerifyingKey::from_public_key_der(&peer_node.public_key_spki)
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        let mut message_to_verify = Vec::new();
-        message_to_verify.extend_from_slice(&response.connection_id.to_le_bytes());
-        message_to_verify.extend_from_slice(&response.answerer_x25519_public_key);
-        message_to_verify.extend_from_slice(response.answerer_sdp.as_bytes());
-
-        let sig_bytes: [u8; 64] = response
-            .signature
-            .clone()
-            .try_into()
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-        let sig = Signature::from_bytes(&sig_bytes);
-
-        verifying_key
-            .verify(&message_to_verify, &sig)
+        let response_payload = p2p_signing::verify_response(&response, &peer_node.public_key_spki)
             .map_err(|_| P2pError::SignatureVerificationFailed)?;
 
         // Extract peer's X25519 public key
-        let peer_x25519_public: [u8; 32] = response
+        let peer_x25519_public: [u8; 32] = response_payload
             .answerer_x25519_public_key
             .try_into()
             .map_err(|_| P2pError::SignatureVerificationFailed)?;
@@ -821,11 +798,11 @@ impl Node {
         let shared_secret = encryption_key.diffie_hellman(&peer_x25519_public);
 
         // Complete ICE connection
-        ice_caller.connect(&response.answerer_sdp).await?;
+        ice_caller.connect(&response_payload.answerer_sdp).await?;
 
         UdpConnection::new_caller(
             peer_node_number,
-            response.connection_id,
+            response_payload.connection_id,
             ice_caller,
             shared_secret,
         )
@@ -842,8 +819,7 @@ impl Node {
         use crate::hub::HubClient;
         use crate::ice::IceCaller;
         use crate::p2p::{P2pError, QuicConnection};
-        use ed25519_dalek::pkcs8::DecodePublicKey;
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        use crate::p2p_signing;
 
         // Check state - map to P2pError for this method's signature
         if self.state() != NodeState::Activated {
@@ -866,21 +842,15 @@ impl Node {
         // Generate ephemeral X25519 keypair for forward secrecy
         let encryption_key = X25519KeyPair::generate_ephemeral();
 
-        // Build the StartConnectionRequest
-        let mut message_to_sign = Vec::new();
-        message_to_sign.extend_from_slice(&peer_node_number.to_le_bytes());
-        message_to_sign.extend_from_slice(&encryption_key.public_key());
-        message_to_sign.extend_from_slice(caller_sdp.as_bytes());
-        let signature = self.signing_key.sign(&message_to_sign);
-
-        let request = proto::StartConnectionRequest {
+        // Build and sign the inner payload, then wrap in the envelope.
+        let payload = proto::start_connection_request::Payload {
             answerer_node_number: peer_node_number,
             caller_x25519_public_key: encryption_key.public_key().to_vec(),
             caller_sdp,
-            signature,
-            stun_turn_config: Some(stun_turn_config),
             transport: proto::Transport::Stream.into(),
+            stun_turn_config: Some(stun_turn_config),
         };
+        let request = p2p_signing::build_signed_request(&self.signing_key, &payload);
 
         // Send to hub
         let response = client.start_connection(registration, request).await?;
@@ -890,27 +860,11 @@ impl Node {
             .find_peer_in_roster(&mut client, peer_node_number)
             .await?;
 
-        let verifying_key = VerifyingKey::from_public_key_der(&peer_node.public_key_spki)
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-
-        let mut message_to_verify = Vec::new();
-        message_to_verify.extend_from_slice(&response.connection_id.to_le_bytes());
-        message_to_verify.extend_from_slice(&response.answerer_x25519_public_key);
-        message_to_verify.extend_from_slice(response.answerer_sdp.as_bytes());
-
-        let sig_bytes: [u8; 64] = response
-            .signature
-            .clone()
-            .try_into()
-            .map_err(|_| P2pError::SignatureVerificationFailed)?;
-        let sig = Signature::from_bytes(&sig_bytes);
-
-        verifying_key
-            .verify(&message_to_verify, &sig)
+        let response_payload = p2p_signing::verify_response(&response, &peer_node.public_key_spki)
             .map_err(|_| P2pError::SignatureVerificationFailed)?;
 
         // Extract peer's X25519 public key
-        let peer_x25519_public: [u8; 32] = response
+        let peer_x25519_public: [u8; 32] = response_payload
             .answerer_x25519_public_key
             .try_into()
             .map_err(|_| P2pError::SignatureVerificationFailed)?;
@@ -919,12 +873,12 @@ impl Node {
         let shared_secret = encryption_key.diffie_hellman(&peer_x25519_public);
 
         // Complete ICE connection
-        ice_caller.connect(&response.answerer_sdp).await?;
+        ice_caller.connect(&response_payload.answerer_sdp).await?;
 
         // Complete QUIC handshake
         QuicConnection::connect_caller(
             peer_node_number,
-            response.connection_id,
+            response_payload.connection_id,
             ice_caller,
             shared_secret,
         )
