@@ -10,6 +10,7 @@ pub mod ice;
 pub mod juice;
 pub mod node;
 pub mod p2p;
+mod p2p_signing;
 pub mod quic;
 pub mod roster;
 pub mod serving;

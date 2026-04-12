@@ -18,8 +18,6 @@ use crate::hub::proto;
 use crate::ice::IceAnswerer;
 use crate::p2p::{P2pError, QuicConnection, UdpConnection};
 use crate::types::ConnectivityGroupId;
-use ed25519_dalek::pkcs8::DecodePublicKey;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use prost::Message;
 use tokio::sync::{mpsc, oneshot};
 
@@ -592,23 +590,9 @@ impl ServingSession {
         req: proto::StartConnectionRequest,
     ) {
         use crate::hub::HubClient;
+        use crate::p2p_signing;
 
-        log::debug!(
-            "  StartConnectionRequest from node {}, answerer_node={}",
-            caller_node_number,
-            req.answerer_node_number
-        );
-
-        // Parse caller's X25519 public key
-        let caller_x25519_public: [u8; 32] = match req.caller_x25519_public_key.clone().try_into() {
-            Ok(key) => key,
-            Err(_) => {
-                log::warn!("  Invalid X25519 public key length");
-                self.send_error_response(request_id, "invalid X25519 public key")
-                    .await;
-                return;
-            }
-        };
+        log::debug!("  StartConnectionRequest from node {}", caller_node_number,);
 
         // Fetch and verify fresh roster from hub
         let mut client = match HubClient::connect(&self.p2p_config.hub_addr).await {
@@ -656,58 +640,49 @@ impl ServingSession {
             return;
         };
 
-        let Ok(verifying_key) = VerifyingKey::from_public_key_der(&caller_node.public_key_spki)
-        else {
-            log::warn!(
-                "  Invalid public key format for node {}",
-                caller_node_number
-            );
-            self.send_error_response(request_id, "invalid caller public key")
-                .await;
-            return;
+        let req_payload = match p2p_signing::verify_request(&req, &caller_node.public_key_spki) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!(
+                    "  Signature verification failed for node {}: {}",
+                    caller_node_number,
+                    e
+                );
+                self.send_error_response(request_id, "signature verification failed")
+                    .await;
+                return;
+            }
         };
 
-        // Verify caller's Ed25519 signature
-        let mut message_to_verify = Vec::new();
-        message_to_verify.extend_from_slice(&req.answerer_node_number.to_le_bytes());
-        message_to_verify.extend_from_slice(&req.caller_x25519_public_key);
-        message_to_verify.extend_from_slice(req.caller_sdp.as_bytes());
+        log::debug!(
+            "  Verified caller signature: node {}, answerer_node={}",
+            caller_node_number,
+            req_payload.answerer_node_number
+        );
 
-        let Ok(signature_bytes): Result<[u8; 64], _> = req.signature.clone().try_into() else {
-            log::warn!("  Invalid signature format");
-            self.send_error_response(request_id, "invalid signature")
-                .await;
-            return;
-        };
-        let signature = Signature::from_bytes(&signature_bytes);
-
-        if verifying_key
-            .verify(&message_to_verify, &signature)
-            .is_err()
-        {
-            log::warn!(
-                "  Signature verification failed for node {}",
-                caller_node_number
-            );
-            self.send_error_response(request_id, "signature verification failed")
-                .await;
-            return;
-        }
-
-        log::debug!("  Verified caller signature: node {}", caller_node_number);
+        // Parse caller's X25519 public key from the verified payload
+        let caller_x25519_public: [u8; 32] =
+            match req_payload.caller_x25519_public_key.clone().try_into() {
+                Ok(key) => key,
+                Err(_) => {
+                    log::warn!("  Invalid X25519 public key length");
+                    self.send_error_response(request_id, "invalid X25519 public key")
+                        .await;
+                    return;
+                }
+            };
 
         // Generate connection ID
         let connection_id = self.connection_id_counter.fetch_add(1, Ordering::Relaxed);
 
-        // Create IceAnswerer with caller's SDP
-        // Use the STUN/TURN config provided by caller to ensure TURN relaying works
-        let Some(stun_turn_config) = &req.stun_turn_config else {
+        // Create IceAnswerer with caller's SDP.
+        let Some(stun_turn_config) = &req_payload.stun_turn_config else {
             log::warn!("  Missing STUN/TURN config in request");
             self.send_error_response(request_id, "missing STUN/TURN config")
                 .await;
             return;
         };
-        let ice_answerer = match IceAnswerer::new(&req.caller_sdp, stun_turn_config) {
+        let ice_answerer = match IceAnswerer::new(&req_payload.caller_sdp, stun_turn_config) {
             Ok(answerer) => answerer,
             Err(e) => {
                 log::error!("  Failed to create ICE answerer: {}", e);
@@ -722,12 +697,14 @@ impl ServingSession {
         // Generate ephemeral X25519 keypair for forward secrecy
         let encryption_key = crate::crypto::X25519KeyPair::generate_ephemeral();
 
-        // Sign our response: connection_id || answerer_x25519_public_key || answerer_sdp
-        let mut message_to_sign = Vec::new();
-        message_to_sign.extend_from_slice(&connection_id.to_le_bytes());
-        message_to_sign.extend_from_slice(&encryption_key.public_key());
-        message_to_sign.extend_from_slice(answerer_sdp.as_bytes());
-        let signature = self.signing_key.sign(&message_to_sign);
+        // Build and sign the inner response payload, then wrap in the envelope.
+        let response_payload = proto::start_connection_response::Payload {
+            connection_id,
+            answerer_x25519_public_key: encryption_key.public_key().to_vec(),
+            answerer_sdp,
+        };
+        let signed_response =
+            p2p_signing::build_signed_response(&self.signing_key, &response_payload);
 
         // Compute shared secret
         let shared_secret = encryption_key.diffie_hellman(&caller_x25519_public);
@@ -737,12 +714,7 @@ impl ServingSession {
             request_id,
             error: String::new(),
             kind: Some(proto::serving_response::Kind::StartConnectionResponse(
-                proto::StartConnectionResponse {
-                    connection_id,
-                    answerer_x25519_public_key: encryption_key.public_key().to_vec(),
-                    answerer_sdp,
-                    signature,
-                },
+                signed_response,
             )),
         };
 
@@ -757,7 +729,7 @@ impl ServingSession {
         );
 
         // Handle based on requested transport type
-        let transport = req.transport();
+        let transport = req_payload.transport();
         match transport {
             proto::Transport::Datagram => {
                 // UDP: Spawn a task to complete ICE

@@ -16,13 +16,14 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
 // Use the proto types from the library
+use prost::Message;
 use wispers_connect::hub::proto::{
     DeregisterNodeRequest, DeregisterNodeResponse, ListNodesRequest, NodeList, NodeRegistration,
     NodeRegistrationRequest, PairNodesMessage, RosterRequest, ServingRequest, ServingResponse,
     StartConnectionRequest, StartConnectionResponse, StunTurnConfig, StunTurnConfigRequest,
     UpdateRosterRequest, UpdateRosterResponse, Welcome,
     hub_server::{Hub, HubServer},
-    roster, serving_request, serving_response,
+    roster, serving_request, serving_response, start_connection_request,
 };
 
 /// A pending connection request waiting for the answerer's response.
@@ -239,7 +240,14 @@ impl Hub for FakeHub {
             .ok_or_else(|| Status::invalid_argument("missing x-node-number"))?;
 
         let conn_request = request.into_inner();
-        let answerer_node_number = conn_request.answerer_node_number;
+
+        // Decode the signed payload to get the routing field, just like
+        // the real hub would. The raw signed_payload bytes are forwarded
+        // unchanged to preserve signature integrity.
+        let payload =
+            start_connection_request::Payload::decode(conn_request.signed_payload.as_slice())
+                .map_err(|_| Status::invalid_argument("cannot decode signed payload"))?;
+        let answerer_node_number = payload.answerer_node_number;
 
         // Find the answerer's serving channel
         let (request_id, request_tx) = {
