@@ -33,7 +33,6 @@ impl SendableUdpConnPtr {
     }
 }
 
-
 /// Opaque handle to a UDP P2P connection.
 pub struct WispersUdpConnectionHandle(pub(crate) UdpConnection);
 
