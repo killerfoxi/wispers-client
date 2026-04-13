@@ -60,5 +60,10 @@ local.properties
 examples/c/ffi_demo
 wispers-connect/tests/c_ffi/ffi_test
 
+# Python
+.venv/
+__pycache__/
+wrappers/python/wispers_connect/_native/
+
 # Claude Code
 .claude/
