@@ -66,6 +66,14 @@
 //! # }
 //! ```
 //!
+//! # Shutdown
+//!
+//! - [`ServingHandle::shutdown`] — stop serving and disconnect from the Hub.
+//! - [`QuicConnection::close`] — close a QUIC connection.
+//! - [`QuicStream::finish`] — signal end-of-write on a stream.
+//! - [`Node::logout`] — revoke the node from the roster, deregister from the
+//!   Hub, and wipe local state. This is permanent.
+//!
 //! # C FFI
 //!
 //! The [`ffi`] module exposes an opaque-handle + callback API for use from
