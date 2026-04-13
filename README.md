@@ -226,12 +226,18 @@ cargo ndk -t arm64-v8a build
 cd wrappers/swift && scripts/build-xcframework.sh
 ```
 
-**Python** (`wrappers/python/`) — uses ctypes. Requires Python 3.11+. Build the Rust library first, then:
+**Python** (`wrappers/python/`) — uses ctypes. Requires Python 3.11+. Install from PyPI (includes the native library):
 
 ```bash
-pip install -e wrappers/python          # editable install
-# or just set PYTHONPATH=wrappers/python and ensure the shared library is on
-# DYLD_LIBRARY_PATH (macOS) / LD_LIBRARY_PATH (Linux)
+pip install wispers-connect
+```
+
+For development, build the wheel locally with [maturin](https://www.maturin.rs/):
+
+```bash
+cd wrappers/python
+python3 -m venv .venv && source .venv/bin/activate
+maturin develop          # builds the Rust library and installs into the venv
 ```
 
 See **[How to use it](docs/HOW_TO_USE.md)** for wrapper-specific integration details.
