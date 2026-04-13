@@ -41,7 +41,7 @@
 //!
 //! ```rust,no_run
 //! # async fn example(node: &mut wispers_connect::Node) -> Result<(), Box<dyn std::error::Error>> {
-//! let (session, handle, mut incoming) = node.start_serving().await?;
+//! let (handle, session, mut incoming) = node.start_serving().await?;
 //! tokio::spawn(session.run());
 //!
 //! // Accept an incoming QUIC connection from a peer.
@@ -59,6 +59,7 @@
 //!
 //! ```rust,no_run
 //! # async fn example(node: &mut wispers_connect::Node) -> Result<(), Box<dyn std::error::Error>> {
+//! let peer_node_number = 2;
 //! let quic = node.connect_quic(peer_node_number).await?;
 //! let stream = quic.open_stream().await?;
 //! stream.write_all(b"hello").await?;
