@@ -1,6 +1,8 @@
 plugins {
     id("com.android.library")
     kotlin("android")
+    `maven-publish`
+    signing
 }
 
 android {
@@ -31,6 +33,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+        }
+    }
 }
 
 dependencies {
@@ -46,4 +54,62 @@ dependencies {
 
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")
+}
+
+publishing {
+    publications {
+        register<MavenPublication>("release") {
+            groupId = "dev.wispers"
+            artifactId = "connect"
+            version = findProperty("VERSION_NAME") as String? ?: "0.8.0-rc1"
+
+            afterEvaluate {
+                from(components["release"])
+            }
+
+            pom {
+                name.set("Wispers Connect")
+                description.set("Android wrapper for the Wispers Connect peer-to-peer connectivity library")
+                url.set("https://wispers.dev")
+
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://github.com/s-te-ch/wispers-client/blob/main/LICENSE")
+                    }
+                }
+
+                developers {
+                    developer {
+                        id.set("mbs")
+                        name.set("Matthias Scheidegger")
+                        email.set("mbs@s-te.ch")
+                    }
+                }
+
+                scm {
+                    url.set("https://github.com/s-te-ch/wispers-client")
+                    connection.set("scm:git:git://github.com/s-te-ch/wispers-client.git")
+                    developerConnection.set("scm:git:ssh://github.com/s-te-ch/wispers-client.git")
+                }
+            }
+        }
+    }
+
+    repositories {
+        maven {
+            name = "sonatype"
+            url = uri("https://central.sonatype.com/repository/maven-central/")
+
+            credentials {
+                username = findProperty("ossrhUsername") as String? ?: System.getenv("OSSRH_USERNAME")
+                password = findProperty("ossrhPassword") as String? ?: System.getenv("OSSRH_PASSWORD")
+            }
+        }
+    }
+}
+
+signing {
+    useGpgCmd()
+    sign(publishing.publications["release"])
 }
