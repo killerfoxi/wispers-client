@@ -2,6 +2,7 @@ plugins {
     id("com.android.library")
     kotlin("android")
     id("com.vanniktech.maven.publish")
+    signing
 }
 
 android {
@@ -48,6 +49,10 @@ dependencies {
 
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")
+}
+
+signing {
+    useGpgCmd()
 }
 
 mavenPublishing {
