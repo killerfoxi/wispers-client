@@ -1,6 +1,8 @@
 plugins {
     id("com.android.library")
     kotlin("android")
+    id("com.vanniktech.maven.publish")
+    signing
 }
 
 android {
@@ -31,6 +33,7 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
 }
 
 dependencies {
@@ -46,4 +49,42 @@ dependencies {
 
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.5.2")
+}
+
+signing {
+    useGpgCmd()
+}
+
+mavenPublishing {
+    publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+    signAllPublications()
+
+    coordinates("dev.wispers", "connect", findProperty("VERSION_NAME") as String? ?: "0.8.0-rc1")
+
+    pom {
+        name.set("Wispers Connect")
+        description.set("Android wrapper for the Wispers Connect peer-to-peer connectivity library")
+        url.set("https://wispers.dev")
+
+        licenses {
+            license {
+                name.set("MIT License")
+                url.set("https://github.com/s-te-ch/wispers-client/blob/main/LICENSE")
+            }
+        }
+
+        developers {
+            developer {
+                id.set("mbs")
+                name.set("Matthias Scheidegger")
+                email.set("mbs@s-te.ch")
+            }
+        }
+
+        scm {
+            url.set("https://github.com/s-te-ch/wispers-client")
+            connection.set("scm:git:git://github.com/s-te-ch/wispers-client.git")
+            developerConnection.set("scm:git:ssh://github.com/s-te-ch/wispers-client.git")
+        }
+    }
 }
