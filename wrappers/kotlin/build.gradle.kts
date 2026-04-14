@@ -51,6 +51,52 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.5.2")
 }
 
+// Build the native library for Android ABIs and bundle into the AAR.
+// Only runs when explicitly invoked (e.g. before publishing).
+val jniLibsDir = file("src/main/jniLibs")
+
+val cargoHome = System.getenv("CARGO_HOME") ?: "${System.getProperty("user.home")}/.cargo"
+val cargo = "$cargoHome/bin/cargo"
+val clientDir = file("../..")
+
+val ndkHome: String? by lazy {
+    System.getenv("ANDROID_NDK_HOME") ?: run {
+        val androidHome = System.getenv("ANDROID_HOME")
+            ?: "${System.getProperty("user.home")}/Library/Android/sdk"
+        val ndkDir = file("$androidHome/ndk")
+        if (ndkDir.isDirectory) {
+            ndkDir.listFiles()?.filter { it.isDirectory }?.maxByOrNull { it.name }?.absolutePath
+        } else null
+    }
+}
+
+val buildNativeLibs by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Build libwispers_connect.so for Android ABIs via cargo-ndk"
+    workingDir = clientDir
+    environment("ANDROID_NDK_HOME", ndkHome ?: "")
+    commandLine(
+        cargo, "ndk",
+        "--target", "arm64-v8a",
+        "--target", "x86_64",
+        "--output-dir", jniLibsDir.absolutePath,
+        "build", "--release", "-p", "wispers-connect"
+    )
+    outputs.dir(jniLibsDir)
+    onlyIf { ndkHome != null }
+}
+
+val cleanNativeLibs by tasks.registering(Delete::class) {
+    delete(jniLibsDir)
+}
+
+// Wire native build into AAR packaging when jniLibs are present
+tasks.matching { it.name == "mergeReleaseJniLibFolders" }.configureEach {
+    if (jniLibsDir.exists()) {
+        inputs.dir(jniLibsDir)
+    }
+}
+
 signing {
     useGpgCmd()
 }
