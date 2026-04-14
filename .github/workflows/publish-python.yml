@@ -11,6 +11,7 @@ jobs:
   build-wheels:
     name: Build wheel (${{ matrix.target }} on ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -19,9 +20,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-          - os: macos-13          # x86_64 runner
+            cross: true
+          - os: macos-latest
             target: x86_64-apple-darwin
-          - os: macos-latest      # arm64 runner
+          - os: macos-latest
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -40,15 +42,25 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev
 
+      - name: Install cross-compilation tools (Linux arm64)
+        if: matrix.cross
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Install maturin
-        run: pip install maturin
+      - name: Install maturin and cffi
+        run: pip install maturin cffi
 
       - name: Build wheel
         working-directory: wrappers/python
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
+          CC_aarch64_unknown_linux_gnu: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
+          CXX_aarch64_unknown_linux_gnu: ${{ matrix.cross && 'aarch64-linux-gnu-g++' || '' }}
+          CMAKE_SYSTEM_NAME: ${{ matrix.cross && 'Linux' || '' }}
+          CMAKE_SYSTEM_PROCESSOR: ${{ matrix.cross && 'aarch64' || '' }}
         run: maturin build --release --target ${{ matrix.target }} --out dist/
 
       - name: Upload wheel artifact
