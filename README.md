@@ -3,6 +3,8 @@
        width="256" alt="Wispers Connect logo"/>
 </center>
 
+**Status: Open Beta** — The API is stabilising but may still change between minor versions.
+
 ## About Wispers Connect
 
 Wispers is an application-level secure overlay network. It connects software
