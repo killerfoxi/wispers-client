@@ -1,0 +1,80 @@
+name: Build Go static libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to upload assets to (e.g. v0.8.0)"
+        required: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin_arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: darwin_amd64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux_amd64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux_arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: staticlib-${{ matrix.target }}
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Build static library
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          CMAKE_OSX_DEPLOYMENT_TARGET: "11.0"
+        run: cargo rustc -p wispers-connect --release --crate-type staticlib --target ${{ matrix.target }}
+
+      - name: Upload to release
+        run: |
+          cp target/${{ matrix.target }}/release/libwispers_connect.a \
+             libwispers_connect-${{ matrix.platform }}.a
+          gh release upload ${{ github.event.inputs.version }} \
+             libwispers_connect-${{ matrix.platform }}.a \
+             --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-header:
+    name: Upload header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload header to release
+        run: |
+          gh release upload ${{ github.event.inputs.version }} \
+             wispers-connect/include/wispers_connect.h \
+             --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

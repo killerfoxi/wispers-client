@@ -46,41 +46,8 @@ zip -r "$OUT/CWispersConnect.xcframework.zip" CWispersConnect.xcframework
 CHECKSUM=$(swift package compute-checksum "$OUT/CWispersConnect.xcframework.zip")
 echo "    Checksum: $CHECKSUM"
 
-# --- Go static libraries ---
-echo ""
-echo "==> Building Go static libraries..."
+# Header (for the release — Go static libs are built by CI)
 cd "$CLIENT_DIR"
-
-# macOS arm64 (native)
-echo "    macOS arm64..."
-MACOSX_DEPLOYMENT_TARGET=11.0 CMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-    cargo rustc -p wispers-connect --release --crate-type staticlib 2>&1 | tail -1
-cp target/release/libwispers_connect.a "$OUT/libwispers_connect-darwin_arm64.a"
-
-# macOS x86_64
-if rustup target list --installed | grep -q x86_64-apple-darwin; then
-    echo "    macOS x86_64..."
-    MACOSX_DEPLOYMENT_TARGET=11.0 CMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-        cargo rustc -p wispers-connect --release --crate-type staticlib --target x86_64-apple-darwin 2>&1 | tail -1
-    cp target/x86_64-apple-darwin/release/libwispers_connect.a "$OUT/libwispers_connect-darwin_amd64.a"
-else
-    echo "    macOS x86_64: SKIPPED (run: rustup target add x86_64-apple-darwin)"
-fi
-
-# Linux targets (skip if cross-compilation not available)
-for target_arch in "aarch64-unknown-linux-gnu:linux_arm64" "x86_64-unknown-linux-gnu:linux_amd64"; do
-    RUST_TARGET="${target_arch%%:*}"
-    GO_PLATFORM="${target_arch##*:}"
-    if rustup target list --installed | grep -q "$RUST_TARGET"; then
-        echo "    $GO_PLATFORM..."
-        cargo rustc -p wispers-connect --release --crate-type staticlib --target "$RUST_TARGET" 2>&1 | tail -1
-        cp "target/$RUST_TARGET/release/libwispers_connect.a" "$OUT/libwispers_connect-${GO_PLATFORM}.a"
-    else
-        echo "    $GO_PLATFORM: SKIPPED (run: rustup target add $RUST_TARGET)"
-    fi
-done
-
-# Header
 cp wispers-connect/include/wispers_connect.h "$OUT/wispers_connect.h"
 
 # --- Summary ---
@@ -130,6 +97,7 @@ echo "==> Release created: https://github.com/$REPO/releases/tag/$VERSION"
 
 echo ""
 echo "==> Done. Remaining steps:"
-echo "    1. Publish to crates.io:  cargo publish -p wispers-connect && cargo publish -p wcadm && cargo publish -p wconnect"
-echo "    2. Publish to PyPI:       Trigger publish-python.yml workflow from GitHub Actions"
-echo "    3. Publish to Maven:      cd examples/kotlin && ./gradlew :wispers-connect:buildNativeLibs :wispers-connect:publishAllPublicationsToMavenCentralRepository"
+echo "    1. Build Go static libs:  Trigger build-go-libs.yml workflow with version $VERSION"
+echo "    2. Publish to crates.io:  cargo publish -p wispers-connect && cargo publish -p wcadm && cargo publish -p wconnect"
+echo "    3. Publish to PyPI:       Trigger publish-python.yml workflow"
+echo "    4. Publish to Maven:      cd examples/kotlin && ./gradlew :wispers-connect:buildNativeLibs :wispers-connect:publishAllPublicationsToMavenCentralRepository"
