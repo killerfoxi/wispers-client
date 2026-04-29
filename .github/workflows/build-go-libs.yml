@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag to upload assets to (e.g. v0.8.0). Must include the 'v' prefix."
-        required: true
+        description: "Release tag to upload assets to (e.g. v0.8.0). Must include the 'v' prefix. Required unless dry_run is true."
+        required: false
+      dry_run:
+        description: "Build only; skip release upload. Artifacts are still attached to the workflow run for inspection."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,11 +35,19 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux_arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
+            platform: windows_amd64
     steps:
       - name: Validate version format
+        if: ${{ !inputs.dry_run }}
         run: |
-          if [[ ! "${{ github.event.inputs.version }}" =~ ^v ]]; then
-            echo "ERROR: Version must start with 'v' (e.g. v0.8.0), got: ${{ github.event.inputs.version }}"
+          if [[ -z "${{ inputs.version }}" ]]; then
+            echo "ERROR: Version is required when dry_run is false"
+            exit 1
+          fi
+          if [[ ! "${{ inputs.version }}" =~ ^v ]]; then
+            echo "ERROR: Version must start with 'v' (e.g. v0.8.0), got: ${{ inputs.version }}"
             exit 1
           fi
 
@@ -59,17 +71,66 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install -y --no-progress protoc nasm
+
+      - name: Configure LIBCLANG_PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+
       - name: Build static library
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
           CMAKE_OSX_DEPLOYMENT_TARGET: "11.0"
         run: cargo rustc -p wispers-connect --release --crate-type staticlib --target ${{ matrix.target }}
 
-      - name: Upload to release
+      - name: Stage artifact with platform-suffixed name
+        shell: bash
         run: |
           cp target/${{ matrix.target }}/release/libwispers_connect.a \
              libwispers_connect-${{ matrix.platform }}.a
-          gh release upload ${{ github.event.inputs.version }} \
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libwispers_connect-${{ matrix.platform }}
+          path: libwispers_connect-${{ matrix.platform }}.a
+          if-no-files-found: error
+
+      - name: Set up Go (smoke test)
+        if: ${{ matrix.platform != 'darwin_amd64' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Smoke test — link a Go consumer against the artifact
+        # Skip darwin_amd64: macos-latest is arm64; cross-linking would
+        # require extra clang flags. Same Apple frameworks underneath, so
+        # darwin_arm64 covers the symbol set.
+        if: ${{ matrix.platform != 'darwin_amd64' }}
+        shell: bash
+        run: |
+          # Stage artifact in the layout the cgo directives expect.
+          mkdir -p wrappers/go/lib/${{ matrix.platform }}
+          cp libwispers_connect-${{ matrix.platform }}.a \
+             wrappers/go/lib/${{ matrix.platform }}/libwispers_connect.a
+          cp wispers-connect/include/wispers_connect.h wrappers/go/lib/
+
+          # go test -c compiles the test binary (which exercises every
+          # FFI symbol), forcing the linker to resolve all transitive
+          # system-lib references. Missing -lXXX surfaces here.
+          cd wrappers/go
+          go test -c -o smoke.test .
+          rm smoke.test
+
+      - name: Upload to release
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          gh release upload ${{ inputs.version }} \
              libwispers_connect-${{ matrix.platform }}.a \
              --clobber
         env:
@@ -78,12 +139,13 @@ jobs:
   upload-header:
     name: Upload header
     runs-on: ubuntu-latest
+    if: ${{ !inputs.dry_run }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Upload header to release
         run: |
-          gh release upload ${{ github.event.inputs.version }} \
+          gh release upload ${{ inputs.version }} \
              wispers-connect/include/wispers_connect.h \
              --clobber
         env:
