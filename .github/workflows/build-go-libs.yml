@@ -99,6 +99,33 @@ jobs:
           path: libwispers_connect-${{ matrix.platform }}.a
           if-no-files-found: error
 
+      - name: Set up Go (smoke test)
+        if: ${{ matrix.platform != 'darwin_amd64' }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Smoke test — link a Go consumer against the artifact
+        # Skip darwin_amd64: macos-latest is arm64; cross-linking would
+        # require extra clang flags. Same Apple frameworks underneath, so
+        # darwin_arm64 covers the symbol set.
+        if: ${{ matrix.platform != 'darwin_amd64' }}
+        shell: bash
+        run: |
+          # Stage artifact in the layout the cgo directives expect.
+          mkdir -p wrappers/go/lib/${{ matrix.platform }}
+          cp libwispers_connect-${{ matrix.platform }}.a \
+             wrappers/go/lib/${{ matrix.platform }}/libwispers_connect.a
+          cp wispers-connect/include/wispers_connect.h wrappers/go/lib/
+
+          # go test -c compiles the test binary (which exercises every
+          # FFI symbol), forcing the linker to resolve all transitive
+          # system-lib references. Missing -lXXX surfaces here.
+          cd wrappers/go
+          go test -c -o smoke.test .
+          rm smoke.test
+
       - name: Upload to release
         if: ${{ !inputs.dry_run }}
         shell: bash
