@@ -25,6 +25,8 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +51,15 @@ jobs:
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install protobuf
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install -y --no-progress protoc nasm
+
+      - name: Configure LIBCLANG_PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
 
       - name: Install maturin and cffi
         run: pip install maturin cffi
