@@ -11,6 +11,8 @@ use crate::types::{GroupInfo, GroupState, NodeInfo, NodeRegistration};
 use std::ffi::{CStr, CString, c_void};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // =============================================================================
 // Handle wrappers
@@ -20,7 +22,37 @@ use std::ptr;
 pub struct WispersNodeStorageHandle(pub(crate) NodeStorage);
 
 /// Opaque handle to a Node instance.
-pub struct WispersNodeHandle(pub(crate) Node);
+///
+/// The inner `Node` is wrapped in `Arc<tokio::sync::Mutex<…>>` so that the
+/// FFI surface is sound under concurrent calls from C-side callers. The C
+/// caller can hand the same pointer to multiple FFI methods on different
+/// threads without violating Rust's aliasing rules: every method acquires
+/// the mutex before touching the inner `Node`, so there is at most one
+/// borrow at any moment.
+#[derive(Clone)]
+pub struct WispersNodeHandle(Arc<Mutex<Node>>);
+
+// Lock helpers are scoped to the FFI module: `blocking_lock` panics if
+// called from inside the runtime, which is a footgun we don't want
+// available to non-FFI code in this crate.
+impl WispersNodeHandle {
+    /// Wrap a freshly-created `Node` in a handle suitable for boxing into
+    /// a raw pointer for FFI return values.
+    pub(in crate::ffi) fn new(node: Node) -> Self {
+        Self(Arc::new(Mutex::new(node)))
+    }
+
+    /// Acquire the inner mutex asynchronously.
+    pub(in crate::ffi) async fn lock(&self) -> tokio::sync::MutexGuard<'_, Node> {
+        self.0.lock().await
+    }
+
+    /// Acquire the inner mutex synchronously. Panics if called from
+    /// inside the library's tokio runtime — see callsite docs.
+    pub(in crate::ffi) fn blocking_lock(&self) -> tokio::sync::MutexGuard<'_, Node> {
+        self.0.blocking_lock()
+    }
+}
 
 // =============================================================================
 // Callback context

@@ -894,11 +894,23 @@ impl Node {
     /// - Pending: just deletes local state
     /// - Registered: deregisters from hub, then deletes local state
     /// - Activated: self-revokes from roster, deregisters from hub, deletes local state
-    pub async fn logout(self) -> Result<(), NodeStateError> {
+    ///
+    /// Takes `&mut self` rather than `self` so it can be called via a
+    /// `MutexGuard` from the FFI layer. This is necessary because the FFI layer
+    /// stores an Arc<Mutex<Node>> to keep access sound when multiple holders
+    /// may exist concurrently (C's guarantees are unsurprisingly weaker than
+    /// Rust's).
+    ///
+    /// After a successful logout, the `Node` is reset to `Pending`. Subsequent
+    /// operations fail with `NodeStateError`, except for `register()`, which
+    /// starts a fresh session.
+    pub async fn logout(&mut self) -> Result<(), NodeStateError> {
         use crate::hub::HubClient;
 
         match self.state() {
-            NodeState::Pending => self.store.delete().map_err(NodeStateError::store),
+            NodeState::Pending => {
+                self.store.delete().map_err(NodeStateError::store)?;
+            }
             NodeState::Registered => {
                 let registration = self.persisted.registration.as_ref().expect("registered");
                 let mut client = HubClient::connect(self.hub_addr())
@@ -910,7 +922,7 @@ impl Node {
                     Err(e) if e.is_unauthenticated() || e.is_not_found() => {}
                     Err(e) => return Err(NodeStateError::hub(e)),
                 }
-                self.store.delete().map_err(NodeStateError::store)
+                self.store.delete().map_err(NodeStateError::store)?;
             }
             NodeState::Activated => {
                 use crate::roster::{
@@ -957,9 +969,17 @@ impl Node {
                 }
 
                 // Step 3: Delete local state
-                self.store.delete().map_err(NodeStateError::store)
+                self.store.delete().map_err(NodeStateError::store)?;
             }
         }
+
+        // Reset in-memory caches so state() reflects the fresh slate.
+        // root_key + signing_key are intentionally left intact so a subsequent
+        // register() reuses the same cryptographic identity.
+        self.persisted.registration = None;
+        *self.roster.write().unwrap() = None;
+
+        Ok(())
     }
 }
 

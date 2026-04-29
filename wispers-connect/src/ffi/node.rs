@@ -145,7 +145,7 @@ pub extern "C" fn wispers_storage_restore_or_init_async(
         match result {
             Ok(node) => {
                 let state = node_state_to_ffi(node.state());
-                let handle = Box::into_raw(Box::new(WispersNodeHandle(node)));
+                let handle = Box::into_raw(Box::new(WispersNodeHandle::new(node)));
                 unsafe {
                     callback(
                         ctx.ptr(),
@@ -190,6 +190,12 @@ pub extern "C" fn wispers_node_free(handle: *mut WispersNodeHandle) {
 }
 
 /// Get the current state/stage of the node.
+///
+/// **Synchronous; acquires the inner mutex via `blocking_lock`.** Must
+/// not be called from inside the library's tokio runtime (e.g. from
+/// within an FFI callback that's still executing on a worker thread) —
+/// `blocking_lock` panics in that context. C callers operating from
+/// their own thread (UI thread, app worker, …) are unaffected.
 #[unsafe(no_mangle)]
 pub extern "C" fn wispers_node_state(handle: *mut WispersNodeHandle) -> WispersNodeState {
     if handle.is_null() {
@@ -197,7 +203,8 @@ pub extern "C" fn wispers_node_state(handle: *mut WispersNodeHandle) -> WispersN
     }
 
     let wrapper = unsafe { &*handle };
-    node_state_to_ffi(wrapper.0.state())
+    let node = wrapper.blocking_lock();
+    node_state_to_ffi(node.state())
 }
 
 /// Register the node with the hub using a registration token.
@@ -226,12 +233,11 @@ pub extern "C" fn wispers_node_register_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let handle_ptr = SendableNodePtr(handle);
+    let handle_clone = unsafe { &*handle }.clone();
 
     runtime::spawn(async move {
-        // Safety: caller must ensure handle is valid and not used concurrently
-        let wrapper = unsafe { handle_ptr.get_mut() };
-        let result = wrapper.0.register(&token_str).await;
+        let mut node = handle_clone.lock().await;
+        let result = node.register(&token_str).await;
 
         match result {
             Ok(()) => unsafe {
@@ -277,12 +283,11 @@ pub extern "C" fn wispers_node_activate_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let handle_ptr = SendableNodePtr(handle);
+    let handle_clone = unsafe { &*handle }.clone();
 
     runtime::spawn(async move {
-        // Safety: caller must ensure handle is valid and not used concurrently
-        let wrapper = unsafe { handle_ptr.get_mut() };
-        let result = wrapper.0.activate(&activation_code_str).await;
+        let mut node = handle_clone.lock().await;
+        let result = node.activate(&activation_code_str).await;
 
         match result {
             Ok(()) => unsafe {
@@ -304,6 +309,10 @@ pub extern "C" fn wispers_node_activate_async(
 /// Logout the node (delete local state, deregister from hub if registered, revoke from roster if activated).
 ///
 /// The node handle is CONSUMED by this call and must not be used afterward.
+/// Any in-flight FFI calls on the same handle will run to completion
+/// (the inner `Arc` keeps the `Node` alive), but no new FFI calls can
+/// be made because the C-side pointer is freed before the spawned
+/// logout task even starts.
 #[unsafe(no_mangle)]
 pub extern "C" fn wispers_node_logout_async(
     handle: *mut WispersNodeHandle,
@@ -319,12 +328,17 @@ pub extern "C" fn wispers_node_logout_async(
         None => return WispersStatus::MissingCallback,
     };
 
-    // Consume the handle
+    // Consume the handle box and move it into the spawned task, which
+    // drops its inner Arc when it finishes. Any in-flight tasks holding
+    // clones of the handle keep the Mutex<Node> alive until they finish.
     let wrapper = unsafe { Box::from_raw(handle) };
     let ctx = CallbackContext(ctx);
 
     runtime::spawn(async move {
-        let result = wrapper.0.logout().await;
+        let result = {
+            let mut node = wrapper.lock().await;
+            node.logout().await
+        };
 
         match result {
             Ok(()) => unsafe {
@@ -365,12 +379,11 @@ pub extern "C" fn wispers_node_group_info_async(
     };
 
     let ctx = CallbackContext(ctx);
-    let handle_ptr = SendableNodePtr(handle);
+    let handle_clone = unsafe { &*handle }.clone();
 
     runtime::spawn(async move {
-        // Safety: caller must ensure handle is valid and not used concurrently
-        let wrapper = unsafe { handle_ptr.get() };
-        let result = wrapper.0.group_info().await;
+        let node = handle_clone.lock().await;
+        let result = node.group_info().await;
         handle_group_info_result(result, ctx, callback);
     });
 
@@ -386,36 +399,6 @@ fn node_state_to_ffi(state: NodeState) -> WispersNodeState {
         NodeState::Pending => WispersNodeState::Pending,
         NodeState::Registered => WispersNodeState::Registered,
         NodeState::Activated => WispersNodeState::Activated,
-    }
-}
-
-/// Helper to move a node pointer into a spawned async task.
-///
-/// Only `Send` is implemented — never `Sync`. Implementing `Sync` would allow
-/// the same pointer to be accessed from multiple threads simultaneously, which
-/// combined with `get_mut` would produce aliased `&mut T` references (UB).
-/// Each `SendableNodePtr` is always moved into exactly one `async move` closure.
-///
-/// Safety: The caller must ensure the handle remains valid for the lifetime of
-/// the spawned task and is not accessed concurrently from other threads.
-struct SendableNodePtr(*mut WispersNodeHandle);
-unsafe impl Send for SendableNodePtr {}
-
-impl SendableNodePtr {
-    /// Get an immutable reference to the inner handle.
-    ///
-    /// # Safety
-    /// The caller must ensure the pointer is valid.
-    unsafe fn get(&self) -> &WispersNodeHandle {
-        unsafe { &*self.0 }
-    }
-
-    /// Get a mutable reference to the inner handle.
-    ///
-    /// # Safety
-    /// The caller must ensure the pointer is valid.
-    unsafe fn get_mut(&self) -> &mut WispersNodeHandle {
-        unsafe { &mut *self.0 }
     }
 }
 
