@@ -1,6 +1,6 @@
 <center>
   <img src="docs/images/wispers-connect-logo-and-text-trans.svg"
-       width="256" alt="Wispers Connect logo"/>
+	   width="256" alt="Wispers Connect logo"/>
 </center>
 
 **Status: Open Beta** — The API is stabilising but may still change between minor versions.
@@ -25,18 +25,41 @@ is written in Rust and C and has wrappers for a growing set of other languages.
 As an introduction to how things work, let's set up two nodes communicating over
 a peer-to-peer connection.
 
-### 0. Prerequisites
+### 0. Install the CLI tools
 
-- A [Rust toolchain](https://rust-lang.org/tools/install/) (install via `rustup`)
-- [CMake](https://cmake.org/), [LLVM/Clang](https://releases.llvm.org/),
-  [protoc](https://github.com/protocolbuffers/protobuf/releases),
-  [Go](https://go.dev/), and [NASM](https://www.nasm.us/) — install via your
-  package manager (e.g. `brew install cmake llvm protobuf go nasm` on macOS)
-- A local clone with submodules:
-  ```bash
-  git clone --recurse-submodules https://github.com/s-te-ch/wispers-client
-  cd wispers-client
-  ```
+We'll use two command-line tools: `wcadm` and `wconnect`. You can either install
+pre-built binaries or build them yourself.
+
+**Without the Rust toolchain**
+
+If you're not sure, use this option.
+
+macOS / Linux:
+```bash
+curl -sSfL https://raw.githubusercontent.com/s-te-ch/wispers-client/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/s-te-ch/wispers-client/main/scripts/install.ps1 | iex
+```
+
+Both scripts install to `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows).
+
+**If you have Rust installed**
+
+Rust users can download the same prebuilt binaries with
+
+```bash
+cargo binstall wcadm wconnect
+```
+
+or you can build the tools from source (do make sure you have all the
+prerequisites listed in [Building from source](#building-from-source)!)
+
+```bash
+cargo install wcadm wconnect
+```
 
 ### 1. Get a Connect account & API key
 
@@ -61,12 +84,12 @@ activation) trust each other. In [Wispers Files](https://files.wispers.dev) for
 example, each user gets their own connectivity group to connect their devices to
 each other.
 
-For this introduction, we'll create a single group named "quick-start" using the
-`wcadm` tool. From the root of the repository, run
+For this introduction, we'll create a single group named "quick-start" using
+`wcadm`:
 
 ```bash
 export WC_API_KEY=$YOURKEY # Your API key, "wc_prod_..."
-cargo run --bin wcadm add-group --name=quick-start
+wcadm add-group --name=quick-start
 ```
 
 The output will show a UUID for your newly created connectivity group. You'll
@@ -90,17 +113,13 @@ created. First, we need a registration token (make sure to set `YOUR_GROUP_ID`
 to the connectivity group ID from step 2).
 
 ```bash
-cargo run --bin wcadm -- \
-    create-registration-token ${YOUR_GROUP_ID} \
-    --name="first node"
+wcadm create-registration-token ${YOUR_GROUP_ID} --name="first node"
 ```
 
 This prints a registration token. Let's use it to actually register the node.
 
 ```bash
-cargo run --bin wconnect -- \
-    --profile="quick-start-1" \
-    register ${YOUR_REGISTRATION_TOKEN}
+wconnect --profile="quick-start-1" register ${YOUR_REGISTRATION_TOKEN}
 ```
 
 In case you're wondering: The `--profile` parameter lets you register multiple
@@ -109,15 +128,11 @@ nodes on the same computer, under the same user — perfect for our quick-start.
 Let's register another node, so we have two we can connect to each other.
 
 ```bash
-cargo run --bin wcadm -- \
-    create-registration-token ${YOUR_GROUP_ID} \
-    --name="second node"
+wcadm create-registration-token ${YOUR_GROUP_ID} --name="second node"
 
 # Note the registration token and use it in the next command.
 
-cargo run --bin wconnect -- \
-    --profile="quick-start-2" \
-    register ${YOUR_REGISTRATION_TOKEN}
+wconnect --profile="quick-start-2" register ${YOUR_REGISTRATION_TOKEN}
 ```
 
 At this point, the nodes can send each other messages through the hub, but it
@@ -138,20 +153,18 @@ To do this with `wconnect`:
 ```bash
 # Put one node into serving mode (it needs to stay online for the handshake)
 # and generate an activation code.
-cargo run --bin wconnect -- --profile="quick-start-1" serve -d
-cargo run --bin wconnect -- --profile="quick-start-1" get-activation-code
+wconnect --profile="quick-start-1" serve -d
+wconnect --profile="quick-start-1" get-activation-code
 
 # Use the code to activate the other node
-cargo run --bin wconnect -- --profile="quick-start-2" \
-    activate ${YOUR_ACTIVATION_CODE}
+wconnect --profile="quick-start-2" activate ${YOUR_ACTIVATION_CODE}
 ```
 
 Done! Have a look at the nodes in the connectivity group. You should see
 something like
 
 ```bash
-$ cargo run --bin wconnect -- --profile="quick-start-1" nodes
-# [... omitted cargo output...]
+$ wconnect --profile="quick-start-1" nodes
 Nodes in connectivity group X (state: AllActivated):
   1: first node (you, activated) - online
   2: second node (activated) - never connected
@@ -160,8 +173,7 @@ Nodes in connectivity group X (state: AllActivated):
 To verify things work, send a peer-to-peer ping between the nodes:
 
 ```bash
-cargo run --bin wconnect -- --profile="quick-start-2" ping 1
-# [... omitted cargo output...]
+$ wconnect --profile="quick-start-2" ping 1
 Pinging node 1 via UDP...
   Connected in 854.116041ms
   Pong received in 1.055834ms
@@ -182,20 +194,36 @@ peer-to-peer connection!
 - **[Frequently Asked Questions](docs/FAQ.md)** — Comparisons to other
   solutions, licensing questions, etc.
 
-## Building
+## Building from source
+
+Both the CLI tools and various language wrappers are available as pre-built
+binaries. Build from source if you want to contribute, develop against unreleased
+changes, or embed the library directly.
+
+Clone with submodules (libjuice is a submodule):
+
+```bash
+git clone --recurse-submodules https://github.com/s-te-ch/wispers-client
+cd wispers-client
+```
 
 ### Rust library & CLI tools
 
 Prerequisites:
 
-- A [Rust toolchain](https://rust-lang.org/tools/install/) (install via `rustup`)
-- [CMake](https://cmake.org/) — builds the bundled libjuice ICE library and BoringSSL
-- [LLVM/Clang](https://releases.llvm.org/) — `bindgen` needs `libclang` for FFI generation
-- [protoc](https://github.com/protocolbuffers/protobuf/releases) — Protocol Buffers compiler (used by `tonic-build`)
+- A [Rust toolchain](https://rust-lang.org/tools/install/) (install via
+  `rustup`)
+- [CMake](https://cmake.org/) — builds the bundled libjuice ICE library and
+  BoringSSL
+- [LLVM/Clang](https://releases.llvm.org/) — `bindgen` needs `libclang` for FFI
+  generation
+- [protoc](https://github.com/protocolbuffers/protobuf/releases) — Protocol
+  Buffers compiler (used by `tonic-build`)
 - [Go](https://go.dev/) — required by the BoringSSL build
 - [NASM](https://www.nasm.us/) — assembler for BoringSSL's optimised routines
 
-Install these via your package manager (e.g. `apt` on Linux, `brew` on macOS, `winget` on Windows).
+Install these via your package manager (e.g. `apt` on Linux, `brew install cmake
+llvm protobuf go nasm` on macOS, `winget` on Windows).
 
 To build:
 
@@ -216,7 +244,8 @@ The workspace produces three artifacts:
 
 Wrappers live in `wrappers/` and link against the shared library built above.
 
-**Go** (`wrappers/go/`) — uses CGo with a prebuilt static library. No Rust toolchain needed:
+**Go** (`wrappers/go/`) — uses CGo with a prebuilt static library. No Rust
+toolchain needed:
 
 ```bash
 go get github.com/s-te-ch/wispers-client/wrappers/go@latest
@@ -224,13 +253,17 @@ go run github.com/s-te-ch/wispers-client/wrappers/go/cmd/fetch-lib@latest
 go build ./...
 ```
 
-**Kotlin/Android** (`wrappers/kotlin/`) — uses JNA. Add the dependency from Maven Central (native `.so` files are bundled in the AAR):
+**Kotlin/Android** (`wrappers/kotlin/`) — uses JNA. Add the dependency from
+Maven Central (native `.so` files are bundled in the AAR):
 
 ```kotlin
 implementation("dev.wispers:connect:0.8.0")
 ```
 
-**Swift** (`wrappers/swift/`) — Swift Package wrapping an XCFramework. Add as a dependency in Xcode using the repository URL `https://github.com/s-te-ch/wispers-client`. The prebuilt xcframework is downloaded automatically via SPM.
+**Swift** (`wrappers/swift/`) — Swift Package wrapping an XCFramework. Add as a
+dependency in Xcode using the repository URL
+`https://github.com/s-te-ch/wispers-client`. The prebuilt xcframework is
+downloaded automatically via SPM.
 
 To rebuild the xcframework from source (for development):
 
@@ -238,13 +271,15 @@ To rebuild the xcframework from source (for development):
 cd wrappers/swift && scripts/build-xcframework.sh --release
 ```
 
-**Python** (`wrappers/python/`) — uses ctypes. Requires Python 3.11+. Install from PyPI (includes the native library):
+**Python** (`wrappers/python/`) — uses ctypes. Requires Python 3.11+. Install
+from PyPI (includes the native library):
 
 ```bash
 pip install wispers-connect
 ```
 
-For development, build the wheel locally with [maturin](https://www.maturin.rs/):
+For development, build the wheel locally with
+[maturin](https://www.maturin.rs/):
 
 ```bash
 cd wrappers/python
@@ -252,7 +287,8 @@ python3 -m venv .venv && source .venv/bin/activate
 maturin develop          # builds the Rust library and installs into the venv
 ```
 
-See **[How to use it](docs/HOW_TO_USE.md)** for wrapper-specific integration details.
+See **[How to use it](docs/HOW_TO_USE.md)** for wrapper-specific integration
+details.
 
 ### Examples
 
