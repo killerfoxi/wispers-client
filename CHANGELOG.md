@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.8.1 — Platform coverage & easier installs
+
+Polish release. Closes platform gaps from 0.8.0 and makes first-time setup
+faster.
+
+### Wider platform coverage
+
+- **Windows** is now a first-class target for Go (cgo + Windows system libs)
+  and Python (PyPI wheel `win_amd64`). The Rust crate itself already built on
+  Windows previously.
+- **`armeabi-v7a` ABI** added to the Android AAR. armv7 devices are no
+  longer excluded.
+- **Precompiled `wcadm` and `wconnect` binaries** for macOS (arm64, x86_64),
+  Linux (amd64, arm64), and Windows. Distributed as `.tar.gz` / `.zip`
+  archives on each release.
+
+### Easier CLI install
+
+The CLI tools now don't need to be built from source (which required
+installing all the build dependencies) and can be installed as pre-built
+binaries instead. The README's quick-start section was updated around this
+change.
+
+### Bug fixes
+
+- **iOS xcframework deployment target**: object files were stamped with the
+  SDK's default minimum iOS version (currently iOS 26.x on Xcode 26),
+  causing "was built for newer iOS-simulator version" warnings on every
+  linked object in consumer apps. Now correctly stamped at iOS 15.
+- **`Package.swift`** no longer claims macOS support — the XCFramework only
+  ships iOS slices, so the declaration was misleading.
+- **`wconnect --version`** now works (was a missing clap attribute).
+
+### Wrappers
+
+- **Go**: `cmd/fetch-lib` gains `--output`, `--target`, and `--version`
+  flags for build systems that need to control the output path (Bazel and
+  similar). Default behavior unchanged.
+
 ## v0.8.0 — Open Beta
 
 The first generally available release of Wispers Connect. Previously limited to
