@@ -1,12 +1,18 @@
 // fetch-lib downloads the prebuilt wispers-connect static library and header
 // for the current platform from GitHub Releases.
 //
-// Usage:
+// Default usage:
 //
-//	go run github.com/s-te-ch/wispers-client/wrappers/go/cmd/fetch-lib@v0.8.0
+//	go run github.com/s-te-ch/wispers-client/wrappers/go/cmd/fetch-lib@v0.8.1
+//
+// Explicit flags — used by Bazel and other build systems that need to control
+// the output location and the target platform:
+//
+//	fetch-lib --version v0.8.1 --target linux_amd64 --output ./lib
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,14 +25,43 @@ import (
 )
 
 func main() {
-	version := moduleVersion()
-	platform := runtime.GOOS + "_" + runtime.GOARCH
+	var output, targetOverride, versionOverride string
+	flag.StringVar(
+		&output, "output", "",
+		"Output directory. If set, writes libwispers_connect.a and wispers_connect.h directly into <output> (no GOMODCACHE lookup).")
+	flag.StringVar(
+		&targetOverride, "target", "",
+		"Platform override (e.g. linux_amd64, windows_amd64). Defaults to runtime.GOOS+_+GOARCH.")
+	flag.StringVar(
+		&versionOverride, "version", "",
+		"Release tag override (e.g. v0.8.1). Defaults to the module's own published version from build info.")
+	flag.Parse()
+
+	version := versionOverride
+	if version == "" {
+		version = moduleVersion()
+	}
+
+	platform := targetOverride
+	if platform == "" {
+		platform = runtime.GOOS + "_" + runtime.GOARCH
+	}
 	asset := fmt.Sprintf("libwispers_connect-%s.a", platform)
 
-	modDir := wispersModDir(version)
-	libDir := filepath.Join(modDir, "lib", platform)
-	libPath := filepath.Join(libDir, "libwispers_connect.a")
-	headerPath := filepath.Join(modDir, "lib", "wispers_connect.h")
+	var libDir, libPath, headerPath string
+	if output != "" {
+		// Direct output mode — used by Bazel / custom build systems that
+		// pin the output path. Skips GOMODCACHE entirely.
+		libDir = output
+		libPath = filepath.Join(output, "libwispers_connect.a")
+		headerPath = filepath.Join(output, "wispers_connect.h")
+	} else {
+		// GOMODCACHE mode — default for `go generate` after `go get`.
+		modDir := wispersModDir(version)
+		libDir = filepath.Join(modDir, "lib", platform)
+		libPath = filepath.Join(libDir, "libwispers_connect.a")
+		headerPath = filepath.Join(modDir, "lib", "wispers_connect.h")
+	}
 
 	if fileExists(libPath) && fileExists(headerPath) {
 		fmt.Printf("Already fetched: %s\n", libPath)
@@ -72,12 +107,12 @@ func moduleVersion() string {
 		}
 	}
 
-	// Fallback: check args
-	if len(os.Args) > 1 {
-		return os.Args[1]
+	// Legacy fallback: positional argument (kept for backward compat).
+	if args := flag.Args(); len(args) > 0 {
+		return args[0]
 	}
 
-	fatal("could not determine version. Pass it as an argument: fetch-lib v0.8.0")
+	fatal("could not determine version. Pass --version <tag> (e.g. --version v0.8.1)")
 	return ""
 }
 
