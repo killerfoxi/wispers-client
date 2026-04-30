@@ -3,7 +3,6 @@ package wispersgo
 //go:generate go run ./cmd/fetch-lib
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/lib
 #cgo darwin,arm64 LDFLAGS: -L${SRCDIR}/lib/darwin_arm64 -lwispers_connect
 #cgo darwin,amd64 LDFLAGS: -L${SRCDIR}/lib/darwin_amd64 -lwispers_connect
 #cgo linux,arm64 LDFLAGS: -L${SRCDIR}/lib/linux_arm64 -lwispers_connect
