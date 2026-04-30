@@ -20,8 +20,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "CWispersConnect",
-            url: "https://github.com/s-te-ch/wispers-client/releases/download/v0.8.1-rc1/CWispersConnect.xcframework.zip",
-            checksum: "5786b024a096aa9a9ec4a500f3fec2ddd60e3cf52d528c64d82b2f0b87b8509e"
+            url: "https://github.com/s-te-ch/wispers-client/releases/download/v0.8.1-rc2/CWispersConnect.xcframework.zip",
+            checksum: "36d57666f5ff1c4634d368282289857f97de5a66423b361b2d0128057fc696a2"
         ),
         .target(
             name: "WispersConnect",
