@@ -202,7 +202,10 @@ enum InnerState {
     /// Node is registered but not yet activated.
     Registered(NodeRegistration),
     /// Node is activated and ready for P2P connections.
-    Activated(NodeRegistration, proto::roster::Roster),
+    Activated {
+        registration: NodeRegistration,
+        roster: std::sync::RwLock<proto::roster::Roster>,
+    },
 }
 
 /// A unified node type that can be in any state (Pending, Registered, Activated).
@@ -269,7 +272,10 @@ impl Node {
         let root_key = persisted.root_key.as_bytes();
         Self {
             signing_key: SigningKeyPair::derive_from_root_key(root_key),
-            inner: InnerState::Activated(registration, roster),
+            inner: InnerState::Activated {
+                registration,
+                roster: RwLock::new(roster),
+            },
             persisted,
             store,
             config,
@@ -281,7 +287,7 @@ impl Node {
         match &self.inner {
             InnerState::Pending => NodeState::Pending,
             InnerState::Registered(_) => NodeState::Registered,
-            InnerState::Activated(_, _) => NodeState::Activated,
+            InnerState::Activated { .. } => NodeState::Activated,
         }
     }
 
@@ -300,7 +306,7 @@ impl Node {
         match &self.inner {
             InnerState::Pending => None,
             InnerState::Registered(reg) => Some(reg),
-            InnerState::Activated(reg, _) => Some(reg),
+            InnerState::Activated { registration, .. } => Some(registration),
         }
     }
 
@@ -351,7 +357,10 @@ impl Node {
 
     fn require_at_least_registered(&self) -> Result<&NodeRegistration, NodeStateError> {
         match &self.inner {
-            InnerState::Registered(reg) | InnerState::Activated(reg, _) => Ok(reg),
+            InnerState::Registered(reg)
+            | InnerState::Activated {
+                registration: reg, ..
+            } => Ok(reg),
             InnerState::Pending => Err(NodeStateError::InvalidState {
                 current: NodeState::Pending,
                 required: "Registered or Activated",
@@ -360,16 +369,14 @@ impl Node {
     }
 
     #[allow(dead_code)]
-    fn require_activated(
-        &self,
-    ) -> Result<(&NodeRegistration, &proto::roster::Roster), NodeStateError> {
-        match &self.inner {
-            InnerState::Activated(reg, roster) => Ok((reg, roster)),
-            _ => Err(NodeStateError::InvalidState {
+    fn require_activated(&self) -> Result<(), NodeStateError> {
+        if !matches!(self.inner, InnerState::Activated { .. }) {
+            return Err(NodeStateError::InvalidState {
                 current: self.state(),
                 required: "Activated",
-            }),
+            });
         }
+        Ok(())
     }
 
     /// Get the signing key.
@@ -542,7 +549,7 @@ impl Node {
         let registration = self.require_at_least_registered()?;
         let hub_addr = self.hub_addr();
 
-        let is_activated = matches!(self.inner, InnerState::Activated(_, _));
+        let is_activated = self.state() == NodeState::Activated;
         log::info!(
             "Starting serving session for node {} in group {}{}",
             registration.node_number,
@@ -688,8 +695,11 @@ impl Node {
         )
         .map_err(NodeStateError::RosterVerificationFailed)?;
 
-        // Update to activated state
-        self.inner = InnerState::Activated(registration, cosigned_roster);
+        // Update to activated state (keys already derived at construction)
+        self.inner = InnerState::Activated {
+            registration,
+            roster: RwLock::new(cosigned_roster),
+        };
 
         Ok(())
     }
@@ -705,17 +715,23 @@ impl Node {
         client: &mut crate::hub::HubClient,
         peer_node_number: i32,
     ) -> Result<proto::roster::Node, crate::p2p::P2pError> {
-        let (registration, roster) = match &self.inner {
-            InnerState::Activated(reg, roster) => (reg, roster),
+        let (registration, roster_lock) = match &self.inner {
+            InnerState::Activated {
+                registration,
+                roster,
+            } => (registration, roster),
             _ => return Err(crate::p2p::P2pError::NotActivated),
         };
 
-        if let Some(node) = roster
-            .nodes
-            .iter()
-            .find(|n| n.node_number == peer_node_number && !n.revoked)
         {
-            return Ok(node.clone());
+            let roster = roster_lock.read().unwrap();
+            if let Some(node) = roster
+                .nodes
+                .iter()
+                .find(|n| n.node_number == peer_node_number && !n.revoked)
+            {
+                return Ok(node.clone());
+            }
         }
 
         log::info!(
@@ -733,9 +749,7 @@ impl Node {
             .cloned()
             .ok_or(crate::p2p::P2pError::SignatureVerificationFailed)?;
 
-        // NOTE: We cannot update self.inner because this is a &self method.
-        // In a more complex refactor, InnerState could be wrapped in an RwLock,
-        // but for now we'll accept the refetch penalty if the cache is stale.
+        *roster_lock.write().unwrap() = fresh_roster;
         Ok(peer_node)
     }
 
@@ -752,11 +766,12 @@ impl Node {
         use crate::p2p::{P2pError, UdpConnection};
         use crate::p2p_signing;
 
-        let registration = match &self.inner {
-            InnerState::Activated(reg, _) => reg,
-            _ => return Err(P2pError::NotActivated),
-        };
+        // Check state - map to P2pError for this method's signature
+        if self.state() != NodeState::Activated {
+            return Err(P2pError::NotActivated);
+        }
 
+        let registration = self.persisted.registration.as_ref().expect("activated");
         let hub_addr = self.hub_addr();
 
         // Connect to hub
@@ -826,11 +841,12 @@ impl Node {
         use crate::p2p::{P2pError, QuicConnection};
         use crate::p2p_signing;
 
-        let registration = match &self.inner {
-            InnerState::Activated(reg, _) => reg,
-            _ => return Err(P2pError::NotActivated),
-        };
+        // Check state - map to P2pError for this method's signature
+        if self.state() != NodeState::Activated {
+            return Err(P2pError::NotActivated);
+        }
 
+        let registration = self.persisted.registration.as_ref().expect("activated");
         let hub_addr = self.hub_addr();
 
         // Connect to hub
@@ -895,33 +911,55 @@ impl Node {
 
     /// Logout: delete local state and deregister from hub if registered.
     ///
+    /// - Pending: just deletes local state
+    /// - Registered: deregisters from hub, then deletes local state
+    /// - Activated: self-revokes from roster, deregisters from hub, deletes local state
+    ///
+    /// Takes `&mut self` rather than `self` so it can be called via a
+    /// `MutexGuard` from the FFI layer. This is necessary because the FFI layer
+    /// stores an Arc<Mutex<Node>> to keep access sound when multiple holders
+    /// may exist concurrently (C's guarantees are unsurprisingly weaker than
+    /// Rust's).
+    ///
     /// After a successful logout, the `Node` is reset to `Pending`. Subsequent
     /// operations fail with `NodeStateError`, except for `register()`, which
     /// starts a fresh session.
     pub async fn logout(&mut self) -> Result<(), NodeStateError> {
         use crate::hub::HubClient;
 
-        match &self.inner {
-            InnerState::Pending => {
+        match self.state() {
+            NodeState::Pending => {
                 self.store.delete().map_err(NodeStateError::store)?;
             }
-            InnerState::Registered(registration) => {
+            NodeState::Registered => {
+                let registration = self.persisted.registration.as_ref().expect("registered");
                 let mut client = HubClient::connect(self.hub_addr())
                     .await
                     .map_err(NodeStateError::hub)?;
-
-                // Best effort remote deregistration
-                let _ = client.deregister_node(registration).await;
-
+                // If unauthenticated, node was already removed server-side — just clean up locally.
+                match client.deregister_node(registration).await {
+                    Ok(()) => {}
+                    Err(e) if e.is_unauthenticated() || e.is_not_found() => {}
+                    Err(e) => return Err(NodeStateError::hub(e)),
+                }
                 self.store.delete().map_err(NodeStateError::store)?;
             }
-            InnerState::Activated(registration, roster) => {
+            NodeState::Activated => {
                 use crate::roster::{
                     active_nodes, add_revocation_to_roster, build_revocation_payload,
                     set_revoker_signature,
                 };
 
-                let active_count = active_nodes(roster).count();
+                let (registration, mut new_roster) = match &self.inner {
+                    InnerState::Activated {
+                        registration,
+                        roster,
+                    } => (registration.clone(), roster.read().unwrap().clone()),
+                    _ => unreachable!(),
+                };
+
+                // Check: prevent revoking the last active node
+                let active_count = active_nodes(&new_roster).count();
                 if active_count <= 1 {
                     return Err(NodeStateError::LastActiveNode);
                 }
@@ -930,27 +968,39 @@ impl Node {
                     .await
                     .map_err(NodeStateError::hub)?;
 
-                // Best effort remote revocation and deregistration
-                let mut new_roster = roster.clone();
+                // Step 1: Self-revoke from roster.
                 let revocation_payload = build_revocation_payload(
                     &new_roster,
-                    registration.node_number,
-                    registration.node_number,
+                    registration.node_number, // revoked
+                    registration.node_number, // revoker (self)
                 );
                 add_revocation_to_roster(&mut new_roster, revocation_payload);
                 let signing_hash = compute_signing_hash(&new_roster);
                 let signature = self.signing_key.sign(&signing_hash);
                 set_revoker_signature(&mut new_roster, signature);
 
-                if client.update_roster(registration, new_roster).await.is_ok() {
-                    let _ = client.deregister_node(registration).await;
+                // If unauthenticated, node was already removed server-side — skip to local cleanup.
+                match client.update_roster(&registration, new_roster).await {
+                    Ok(_) => {
+                        // Step 2: Deregister from hub
+                        match client.deregister_node(&registration).await {
+                            Ok(()) => {}
+                            Err(e) if e.is_unauthenticated() || e.is_not_found() => {}
+                            Err(e) => return Err(NodeStateError::hub(e)),
+                        }
+                    }
+                    Err(e) if e.is_unauthenticated() || e.is_not_found() => {}
+                    Err(e) => return Err(NodeStateError::hub(e)),
                 }
 
+                // Step 3: Delete local state
                 self.store.delete().map_err(NodeStateError::store)?;
             }
         }
 
-        // Reset state
+        // Reset in-memory caches so state() reflects the fresh slate.
+        // root_key + signing_key are intentionally left intact so a subsequent
+        // register() reuses the same cryptographic identity.
         self.persisted.registration = None;
         self.inner = InnerState::Pending;
 
@@ -976,7 +1026,10 @@ impl Node {
 
         Self {
             signing_key: SigningKeyPair::derive_from_root_key(&root_key),
-            inner: InnerState::Activated(registration, roster),
+            inner: InnerState::Activated {
+                registration,
+                roster: RwLock::new(roster),
+            },
             persisted,
             store: Arc::new(InMemoryNodeStateStore::new()),
             config: Arc::new(std::sync::RwLock::new(RuntimeConfig::new_with_addr(
